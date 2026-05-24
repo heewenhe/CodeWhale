@@ -2512,20 +2512,15 @@ async fn run_event_loop(
                 && app.sidebar_focus == SidebarFocus::Tasks
                 && !app.runtime_turn_id.as_deref().unwrap_or("").is_empty()
             {
-                if key.code == KeyCode::Char('y')
-                    && key.modifiers == KeyModifiers::NONE
-                {
+                if key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::NONE {
                     if let Some(turn_id) = app.runtime_turn_id.as_ref()
                         && app.clipboard.write_text(turn_id).is_ok()
                     {
-                        app.status_message =
-                            Some(format!("Copied turn id {turn_id}"));
+                        app.status_message = Some(format!("Copied turn id {turn_id}"));
                     }
                     continue;
                 }
-                if key.code == KeyCode::Char('Y')
-                    && key.modifiers == KeyModifiers::NONE
-                {
+                if key.code == KeyCode::Char('Y') && key.modifiers == KeyModifiers::NONE {
                     let mut detail = String::new();
                     if let Some(turn_id) = app.runtime_turn_id.as_ref() {
                         let _ = write!(detail, "turn {turn_id}");
@@ -2534,8 +2529,7 @@ async fn run_event_loop(
                         let _ = write!(detail, "  status={status}");
                     }
                     if !detail.is_empty() && app.clipboard.write_text(&detail).is_ok() {
-                        app.status_message =
-                            Some(format!("Copied {detail}"));
+                        app.status_message = Some(format!("Copied {detail}"));
                     }
                     continue;
                 }
