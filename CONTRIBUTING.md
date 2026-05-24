@@ -95,6 +95,11 @@ When this happens:
 - The harvested commit's message includes `Harvested from PR #N by
   @your-handle`. This is the contract: that line is your credit and the
   signal that your contribution shipped.
+- If the maintainer copies or adapts your code, the harvested commit also
+  keeps attribution with the original author identity when possible: either by
+  preserving the commit author on a cherry-pick or by adding a
+  `Co-authored-by: Name <email>` trailer from the original PR commit. This is
+  what lets GitHub's contribution surfaces recognize more than prose credit.
 - The `CHANGELOG.md` entry for the next release credits you by handle.
 - The auto-close workflow closes your PR with a templated thank-you and
   a link to the commit on `main`.

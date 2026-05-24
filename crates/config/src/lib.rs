@@ -1565,8 +1565,7 @@ pub fn migrate_config_if_needed() -> Result<()> {
     }
     // Copy the config to the new home.
     if let Some(parent) = primary.parent() {
-        std::fs::create_dir_all(parent)
-            .context("failed to create codewhale config directory")?;
+        std::fs::create_dir_all(parent).context("failed to create codewhale config directory")?;
     }
     std::fs::copy(&legacy, &primary)
         .context("failed to migrate config from deepseek to codewhale home")?;

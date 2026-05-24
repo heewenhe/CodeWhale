@@ -474,24 +474,6 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     };
     refresh_active_task_panel(&mut app, &task_manager).await;
 
-    // v0.8.44: push session picker on clean startup when saved sessions
-    // exist and no explicit resume was requested (#1638).
-    if options.resume_session_id.is_none()
-        && options.initial_input.is_none()
-        && !options.skip_onboarding
-    {
-        if let Ok(manager) = crate::session_manager::SessionManager::default_location() {
-            if let Ok(sessions) = manager.list_sessions() {
-                if !sessions.is_empty() {
-                    app.view_stack
-                        .push(crate::tui::session_picker::SessionPickerView::new(
-                            &app.workspace,
-                        ));
-                }
-            }
-        }
-    }
-
     let engine_config = build_engine_config(&app, config);
 
     // Spawn the Engine - it will handle all API communication

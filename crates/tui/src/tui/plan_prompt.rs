@@ -102,10 +102,7 @@ pub struct PlanPromptView {
 
 impl PlanPromptView {
     pub fn new(plan: Option<PlanSnapshot>) -> Self {
-        Self {
-            selected: 0,
-            plan,
-        }
+        Self { selected: 0, plan }
     }
 
     fn max_index(&self) -> usize {

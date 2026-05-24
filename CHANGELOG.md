@@ -17,9 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Session picker inline rename.** Press `r` in the session picker (Ctrl+R)
   to rename the selected session inline. Type the new title, Enter to confirm,
   Esc to cancel (#1600).
-- **Session picker on clean startup.** When saved sessions exist and no
-  `--resume`/`--continue`/`--fresh` flag is given, the session picker opens
-  automatically so you can pick up where you left off (#1638).
 - **Plan detail display.** The \"Plan Confirmation\" modal now shows the plan
   explanation and step list from `update_plan` so you can review what was
   proposed before accepting (#834).
@@ -40,6 +37,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.deepseek/config.toml`. Both are read; the CodeWhale root takes precedence.
 - **Doctor reports active state root** and whether legacy `~/.deepseek/`
   state is also present.
+- **README contributor acknowledgements are current for this release.**
+  Thanks @jeoor, @LING71671, and @ousamabenyounes for the fixes and reports
+  now reflected in the public credits.
+- **Harvested-contribution credit audit completed.** The README Thanks list now
+  includes previously missed community helpers whose code, reports, or review
+  notes were already credited in older changelog entries but not in the public
+  contributor surface: @mvanhorn, @krisclarkdev, @tdccccc, @LittleBlacky,
+  @AnaheimEX, @THatch26, @alvin1, @knqiufan, @IIzzaya, @duanchao-lab,
+  @imkingjh999, @eng2007, @chennest, @kunpeng-ai-lab, @asdfg314284230,
+  @maker316, @lalala-233, @muyuliyan, @czf0718, @MeAiRobot, @tiger-dog,
+  @MMMarcinho, @lucaszhu-hue, @sandofree, @zhuangbiaowei, @NorethSea,
+  @Jianfengwu2024, @Fire-dtx, @oooyuy92, @qinxianyuzou, @tyouter,
+  @xulongzhe, @YaYII, @47Cid, and @JafarAkhondali.
+- **Harvest guidance now requires GitHub-visible attribution.** Maintainer
+  harvests should preserve the original commit author where possible or add
+  `Co-authored-by` trailers from the original PR commits, in addition to the
+  existing `Harvested from PR #N by @handle` trailer and changelog credit.
 - **Enter now steers when busy-waiting.** When the model is busy but not
   actively streaming (waiting on tool results, sub-agents, or shell
   commands), pressing Enter tries to steer your message into the current
@@ -55,6 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preventing unbounded growth of `~/.codewhale/sessions/`.
 - **Checkpoint path resolution** no longer hardcodes `~/.deepseek/` — uses
   the resolved session directory instead.
+- **Plain startup no longer auto-opens the session picker.** `codewhale` and
+  `codew` start in a fresh composer again even when saved sessions exist.
+  Use `/sessions`, Ctrl+R, `--resume`, or `--continue` when you want to resume.
 - **Work sidebar now refreshes immediately** after `checklist_write`,
   `checklist_update`, and `update_plan` tool calls, matching the existing
   `todo_write` behavior instead of relying on the 2.5s periodic poll (#1787).
@@ -4789,7 +4806,8 @@ Welcome — and thank you.
 - Hooks system and config profiles
 - Example skills and launch assets
 
-[Unreleased]: https://github.com/Hmbown/CodeWhale/compare/v0.8.43...HEAD
+[Unreleased]: https://github.com/Hmbown/CodeWhale/compare/v0.8.44...HEAD
+[0.8.44]: https://github.com/Hmbown/CodeWhale/compare/v0.8.43...v0.8.44
 [0.8.43]: https://github.com/Hmbown/CodeWhale/compare/v0.8.42...v0.8.43
 [0.8.42]: https://github.com/Hmbown/CodeWhale/compare/v0.8.41...v0.8.42
 [0.8.41]: https://github.com/Hmbown/CodeWhale/compare/v0.8.40...v0.8.41
