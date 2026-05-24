@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path now tries `wl-copy` before `arboard`, fixing silent copy failures on
   niri, River, cosmic-comp, and GNOME mutter (#1938). Thanks @ousamabenyounes.
 
+### Added
+
+- **Tasks sidebar now shows fuller turn IDs and supports copy-to-clipboard.**
+  Turn ID prefixes are widened from 12 to 16 characters for disambiguation,
+  background job status is presented as "X running, Y completed" instead of
+  ambiguous "X active (Y running)", and `y` / `Y` yank affordances copy the
+  current turn ID or full status line to the system clipboard (#1975).
+
 ### Changed
 
 - **Contributor count and acknowledgement surfaces refreshed.** The website
