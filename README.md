@@ -782,6 +782,8 @@ This project ships with help from a growing community of contributors:
 - **[cyq1017](https://github.com/cyq1017)** — runtime event envelope, render-diff debug logging, and deterministic composer history flushing (#2252, #2332, #2375)
 - **[hongqitai](https://github.com/hongqitai)** — state schema parent-entry support and clippy/fmt cleanup (#2308, #2432)
 - **[BryonGo](https://github.com/BryonGo)** — effective-model compaction budgeting fix (#2437)
+- **[xyuai](https://github.com/xyuai)** — provider persistence to config, /logout scope clarification, provider picker key replacement shortcut, MiMo auth state cleanup (#2714, #2715, #2717, #2718)
+- **[RefuseOdd](https://github.com/RefuseOdd)** — configurable `path_suffix` for OpenAI-compatible endpoints (#2558)
 
 Reports, repros, and verification that shaped v0.8.48 also deserve visible
 credit: **[@buko](https://github.com/buko)**, **[@yyyCode](https://github.com/yyyCode)**,
