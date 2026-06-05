@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so slow local or OpenAI-compatible model servers can extend the SSE idle
   timeout without mutating process environment. The legacy
   `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` env var remains a fallback (#2365, #2507).
+- Added dormant `fallback_providers = [...]` config parsing plus a provider-chain
+  helper for future fallback routing. This preserves the requested contract
+  without enabling silent runtime provider switches yet (#2574, #2777). Thanks
+  @hsdbeebou for the request and @idling11 for the data-model draft.
 
 ### Changed
 

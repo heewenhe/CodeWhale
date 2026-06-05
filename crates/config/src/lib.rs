@@ -464,6 +464,11 @@ pub struct ConfigToml {
     pub tools: Option<ToolsToml>,
     #[serde(default)]
     pub providers: ProvidersToml,
+    /// Dormant provider fallback chain (#2574). This is parsed and preserved
+    /// for future provider-routing work; current runtime resolution still uses
+    /// the selected primary provider and does not auto-switch routes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_providers: Vec<ProviderKind>,
     /// Per-domain network policy (#135). When absent, network tools fall back
     /// to a permissive default that mirrors pre-v0.7.0 behavior.
     #[serde(default)]
@@ -491,6 +496,71 @@ pub struct ConfigToml {
     pub hook_sinks: Option<HookSinksToml>,
     #[serde(flatten)]
     pub extras: BTreeMap<String, toml::Value>,
+}
+
+/// Ordered primary-plus-fallback provider list for future provider routing.
+///
+/// The helper is intentionally dormant: constructing or parsing a chain does
+/// not change [`ConfigToml::resolve_runtime_options`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderChain {
+    providers: Vec<ProviderKind>,
+    position: usize,
+}
+
+impl ProviderChain {
+    #[must_use]
+    pub fn new(active: ProviderKind, fallbacks: &[ProviderKind]) -> Self {
+        let mut providers = vec![active];
+        for fallback in fallbacks {
+            if *fallback != active && !providers.contains(fallback) {
+                providers.push(*fallback);
+            }
+        }
+        Self {
+            providers,
+            position: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn providers(&self) -> &[ProviderKind] {
+        &self.providers
+    }
+
+    #[must_use]
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    #[must_use]
+    pub fn current(&self) -> ProviderKind {
+        self.providers[self.position]
+    }
+
+    #[must_use]
+    pub fn has_next(&self) -> bool {
+        self.position + 1 < self.providers.len()
+    }
+
+    pub fn advance(&mut self) -> Option<ProviderKind> {
+        if !self.has_next() {
+            return None;
+        }
+        self.position += 1;
+        Some(self.current())
+    }
+
+    #[must_use]
+    pub fn is_fallback_active(&self) -> bool {
+        self.position > 0
+    }
+
+    /// Count the current provider plus untried chain entries.
+    #[must_use]
+    pub fn remaining(&self) -> usize {
+        self.providers.len() - self.position
+    }
 }
 
 /// On-disk schema for the `[hook_sinks]` table.
@@ -5225,6 +5295,114 @@ model = "mimo-v2.5-pro"
         let resolved = ConfigToml::default().resolve_runtime_options_with_secrets(&cli, &secrets);
         assert_eq!(resolved.api_key.as_deref(), Some("cli-key"));
         assert_eq!(resolved.api_key_source, Some(RuntimeApiKeySource::Cli));
+    }
+
+    #[test]
+    fn provider_chain_initial_current_is_active() {
+        let chain = ProviderChain::new(
+            ProviderKind::NvidiaNim,
+            &[ProviderKind::Deepseek, ProviderKind::Openrouter],
+        );
+
+        assert_eq!(chain.current(), ProviderKind::NvidiaNim);
+        assert_eq!(chain.position(), 0);
+        assert_eq!(
+            chain.providers(),
+            &[
+                ProviderKind::NvidiaNim,
+                ProviderKind::Deepseek,
+                ProviderKind::Openrouter,
+            ]
+        );
+        assert!(!chain.is_fallback_active());
+    }
+
+    #[test]
+    fn provider_chain_advance_switches_to_fallback() {
+        let mut chain = ProviderChain::new(
+            ProviderKind::NvidiaNim,
+            &[ProviderKind::Deepseek, ProviderKind::Openrouter],
+        );
+
+        assert!(chain.has_next());
+        assert_eq!(chain.advance(), Some(ProviderKind::Deepseek));
+        assert_eq!(chain.current(), ProviderKind::Deepseek);
+        assert!(chain.is_fallback_active());
+    }
+
+    #[test]
+    fn provider_chain_exhausts_returns_none() {
+        let mut chain = ProviderChain::new(ProviderKind::Deepseek, &[ProviderKind::Openrouter]);
+
+        assert_eq!(chain.advance(), Some(ProviderKind::Openrouter));
+        assert!(!chain.has_next());
+        assert_eq!(chain.advance(), None);
+    }
+
+    #[test]
+    fn provider_chain_skips_duplicates() {
+        let chain = ProviderChain::new(
+            ProviderKind::Deepseek,
+            &[
+                ProviderKind::Deepseek,
+                ProviderKind::NvidiaNim,
+                ProviderKind::Deepseek,
+            ],
+        );
+
+        assert_eq!(
+            chain.providers(),
+            &[ProviderKind::Deepseek, ProviderKind::NvidiaNim]
+        );
+    }
+
+    #[test]
+    fn provider_chain_remaining_counts_current_and_untried_entries() {
+        let mut chain = ProviderChain::new(
+            ProviderKind::Deepseek,
+            &[ProviderKind::NvidiaNim, ProviderKind::Openrouter],
+        );
+
+        assert_eq!(chain.remaining(), 3);
+        assert_eq!(chain.advance(), Some(ProviderKind::NvidiaNim));
+        assert_eq!(chain.remaining(), 2);
+    }
+
+    #[test]
+    fn config_toml_parses_fallback_providers() {
+        let config: ConfigToml = toml::from_str(
+            r#"
+provider = "nvidia-nim"
+fallback_providers = ["deepseek", "openrouter"]
+"#,
+        )
+        .expect("fallback providers config");
+
+        assert_eq!(config.provider, ProviderKind::NvidiaNim);
+        assert_eq!(
+            config.fallback_providers,
+            [ProviderKind::Deepseek, ProviderKind::Openrouter]
+        );
+    }
+
+    #[test]
+    fn empty_fallback_providers_do_not_serialize() {
+        let serialized = toml::to_string_pretty(&ConfigToml::default()).expect("config serializes");
+
+        assert!(!serialized.contains("fallback_providers"));
+    }
+
+    #[test]
+    fn fallback_providers_do_not_change_runtime_resolution() {
+        let config = ConfigToml {
+            provider: ProviderKind::NvidiaNim,
+            fallback_providers: vec![ProviderKind::Deepseek],
+            ..ConfigToml::default()
+        };
+
+        let resolved = config.resolve_runtime_options(&CliRuntimeOverrides::default());
+
+        assert_eq!(resolved.provider, ProviderKind::NvidiaNim);
     }
 
     #[test]
