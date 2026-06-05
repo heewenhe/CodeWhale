@@ -5394,6 +5394,8 @@ fallback_providers = ["deepseek", "openrouter"]
 
     #[test]
     fn fallback_providers_do_not_change_runtime_resolution() {
+        let _lock = env_lock();
+        let _env = EnvGuard::without_deepseek_runtime_overrides();
         let config = ConfigToml {
             provider: ProviderKind::NvidiaNim,
             fallback_providers: vec![ProviderKind::Deepseek],
