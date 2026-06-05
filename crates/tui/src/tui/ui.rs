@@ -908,6 +908,7 @@ fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         runtime_services: app.runtime_services.clone(),
         subagent_model_overrides: config.subagent_model_overrides(),
         subagent_api_timeout: Duration::from_secs(config.subagent_api_timeout_secs()),
+        stream_chunk_timeout: Duration::from_secs(app.stream_chunk_timeout_secs),
         subagent_heartbeat_timeout: Duration::from_secs(config.subagent_heartbeat_timeout_secs()),
         prefer_bwrap: config.prefer_bwrap.unwrap_or(false),
         memory_enabled: config.memory_enabled(),
@@ -5804,6 +5805,11 @@ async fn apply_command_result(
             AppAction::UpdateCompaction(compaction) => {
                 apply_model_and_compaction_update(engine_handle, compaction, app.mode).await;
             }
+            AppAction::UpdateStreamChunkTimeout(timeout_secs) => {
+                let _ = engine_handle
+                    .send(Op::SetStreamChunkTimeout { timeout_secs })
+                    .await;
+            }
             AppAction::OpenConfigEditor(mode) => match mode {
                 ConfigUiMode::Native => {
                     if app.view_stack.top_kind() != Some(ModalKind::Config) {
@@ -7405,6 +7411,11 @@ async fn handle_view_events(
                     match action {
                         AppAction::UpdateCompaction(compaction) => {
                             apply_model_and_compaction_update(engine_handle, compaction, app.mode)
+                                .await;
+                        }
+                        AppAction::UpdateStreamChunkTimeout(timeout_secs) => {
+                            let _ = engine_handle
+                                .send(Op::SetStreamChunkTimeout { timeout_secs })
                                 .await;
                         }
                         AppAction::OpenConfigView => {}

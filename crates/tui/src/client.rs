@@ -158,6 +158,7 @@ pub struct DeepSeekClient {
     connection_health: Arc<AsyncMutex<ConnectionHealth>>,
     rate_limiter: Arc<AsyncMutex<TokenBucket>>,
     path_suffix: Option<String>,
+    pub(super) stream_idle_timeout: Duration,
 }
 
 const CONNECTION_FAILURE_THRESHOLD: u32 = 2;
@@ -325,6 +326,7 @@ impl Clone for DeepSeekClient {
             connection_health: self.connection_health.clone(),
             rate_limiter: self.rate_limiter.clone(),
             path_suffix: self.path_suffix.clone(),
+            stream_idle_timeout: self.stream_idle_timeout,
         }
     }
 }
@@ -581,6 +583,7 @@ impl DeepSeekClient {
         validate_base_url_security(&base_url)?;
         let retry = config.retry_policy();
         let default_model = config.default_model();
+        let stream_idle_timeout = Duration::from_secs(config.stream_chunk_timeout_secs());
         let http_headers = config.http_headers();
         let path_suffix = config
             .provider_config_for(api_provider)
@@ -615,6 +618,7 @@ impl DeepSeekClient {
             connection_health: Arc::new(AsyncMutex::new(ConnectionHealth::default())),
             rate_limiter: Arc::new(AsyncMutex::new(TokenBucket::from_env())),
             path_suffix,
+            stream_idle_timeout,
         })
     }
 
@@ -1681,6 +1685,21 @@ mod tests {
         extra.insert("X-Blank".to_string(), "   ".to_string());
         let headers = DeepSeekClient::default_headers("sk-test", &extra).expect("headers");
         assert!(headers.get("x-blank").is_none());
+    }
+
+    #[test]
+    fn client_stream_idle_timeout_uses_tui_config() {
+        let client = DeepSeekClient::new(&Config {
+            api_key: Some("sk-test".to_string()),
+            tui: Some(crate::config::TuiConfig {
+                stream_chunk_timeout_secs: Some(777),
+                ..crate::config::TuiConfig::default()
+            }),
+            ..Config::default()
+        })
+        .expect("client");
+
+        assert_eq!(client.stream_idle_timeout, Duration::from_secs(777));
     }
 
     #[test]

@@ -351,6 +351,10 @@ pub struct EngineConfig {
     /// once at engine construction, then threaded onto every
     /// `SubAgentRuntime` the engine builds (#1806, #1808).
     pub subagent_api_timeout: Duration,
+    /// Per-SSE-chunk idle timeout for streamed model responses.
+    /// Resolved from `[tui].stream_chunk_timeout_secs` (or the legacy
+    /// `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS`) and updated live by `/config`.
+    pub stream_chunk_timeout: Duration,
     /// No-progress heartbeat timeout for live sub-agents. Used by the manager
     /// and parent wait loop to auto-cancel stuck children before they exhaust
     /// the sub-agent slot pool indefinitely (#2614).
@@ -413,6 +417,9 @@ impl Default for EngineConfig {
             search_base_url: None,
             subagent_api_timeout: Duration::from_secs(
                 crate::config::DEFAULT_SUBAGENT_API_TIMEOUT_SECS,
+            ),
+            stream_chunk_timeout: Duration::from_secs(
+                crate::config::DEFAULT_STREAM_CHUNK_TIMEOUT_SECS,
             ),
             subagent_heartbeat_timeout: Duration::from_secs(
                 crate::config::DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT_SECS,
@@ -1268,6 +1275,15 @@ impl Engine {
                         .send(Event::status(format!(
                             "Auto-compaction {}",
                             if enabled { "enabled" } else { "disabled" }
+                        )))
+                        .await;
+                }
+                Op::SetStreamChunkTimeout { timeout_secs } => {
+                    self.config.stream_chunk_timeout = Duration::from_secs(timeout_secs);
+                    let _ = self
+                        .tx_event
+                        .send(Event::status(format!(
+                            "Stream chunk timeout set to {timeout_secs}s"
                         )))
                         .await;
                 }
@@ -2745,7 +2761,7 @@ use self::streaming::{
     ContentBlockKind, FAKE_WRAPPER_NOTICE, MAX_STREAM_ERRORS_BEFORE_FAIL,
     MAX_TRANSPARENT_STREAM_RETRIES, STREAM_MAX_CONTENT_BYTES, STREAM_MAX_DURATION_SECS,
     ToolUseState, contains_fake_tool_wrapper, filter_tool_call_delta,
-    should_transparently_retry_stream, stream_chunk_timeout_secs,
+    should_transparently_retry_stream,
 };
 use self::tool_catalog::{
     CODE_EXECUTION_TOOL_NAME, JS_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME,

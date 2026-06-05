@@ -6,7 +6,8 @@ use std::time::Duration;
 use super::CommandResult;
 use crate::client::DeepSeekClient;
 use crate::config::{
-    ApiProvider, COMMON_DEEPSEEK_MODELS, Config, DEFAULT_XIAOMI_MIMO_BASE_URL,
+    ApiProvider, COMMON_DEEPSEEK_MODELS, Config, DEFAULT_STREAM_CHUNK_TIMEOUT_SECS,
+    DEFAULT_XIAOMI_MIMO_BASE_URL, MAX_STREAM_CHUNK_TIMEOUT_SECS, MIN_STREAM_CHUNK_TIMEOUT_SECS,
     XIAOMI_MIMO_PAY_AS_YOU_GO_BASE_URL, clear_active_provider_api_key, effective_home_dir,
     expand_path, normalize_model_name_for_provider,
 };
@@ -152,6 +153,7 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
             };
             Some(config.deepseek_base_url())
         }
+        "stream_chunk_timeout_secs" => Some(app.stream_chunk_timeout_secs.to_string()),
         "locale" | "language" => Some(locale_display(app.ui_locale).to_string()),
         "theme" | "ui_theme" => {
             Some(crate::palette::theme_label_for_mode(app.ui_theme.mode).to_string())
@@ -417,6 +419,45 @@ fn persist_root_bool_key(
     Ok(path)
 }
 
+fn persist_tui_integer_key(
+    config_path: Option<&Path>,
+    key: &str,
+    value: u64,
+) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+    use std::fs;
+
+    let path = config_toml_path(config_path)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    let mut doc: toml::Value = if path.exists() {
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read config at {}", path.display()))?;
+        toml::from_str(&raw)
+            .with_context(|| format!("failed to parse config at {}", path.display()))?
+    } else {
+        toml::Value::Table(toml::value::Table::new())
+    };
+    let table = doc
+        .as_table_mut()
+        .context("config.toml root must be a table")?;
+    let tui_entry = table
+        .entry("tui".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::value::Table::new()));
+    let tui_table = tui_entry
+        .as_table_mut()
+        .context("`tui` section in config.toml must be a table")?;
+    let value = i64::try_from(value).context("integer value is too large for TOML")?;
+    tui_table.insert(key.to_string(), toml::Value::Integer(value));
+    let body = toml::to_string_pretty(&doc).context("failed to serialize config.toml")?;
+    fs::write(&path, body)
+        .with_context(|| format!("failed to write config at {}", path.display()))?;
+    Ok(path)
+}
+
 fn persist_provider_base_url_key(
     config_path: Option<&Path>,
     provider: ApiProvider,
@@ -522,6 +563,14 @@ fn parse_config_bool(value: &str) -> Result<bool, String> {
         _ => Err(format!(
             "Failed to parse boolean '{value}': expected on/off, true/false, yes/no."
         )),
+    }
+}
+
+fn stream_chunk_timeout_value_label(raw: u64, resolved: u64) -> String {
+    if raw == 0 {
+        format!("0 (default {resolved})")
+    } else {
+        resolved.to_string()
     }
 }
 
@@ -727,6 +776,55 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             }
             return CommandResult::error(
                 "provider_url must be saved with --save; client base URL is loaded from config on startup. Restart and re-open your session after saving.",
+            );
+        }
+        "stream_chunk_timeout_secs" => {
+            let raw = match value.trim().parse::<u64>() {
+                Ok(value) => value,
+                Err(_) => {
+                    return CommandResult::error(
+                        "stream_chunk_timeout_secs must be a whole number",
+                    );
+                }
+            };
+            if raw != 0
+                && !(MIN_STREAM_CHUNK_TIMEOUT_SECS..=MAX_STREAM_CHUNK_TIMEOUT_SECS).contains(&raw)
+            {
+                return CommandResult::error(format!(
+                    "stream_chunk_timeout_secs must be 0 or {}..={}",
+                    MIN_STREAM_CHUNK_TIMEOUT_SECS, MAX_STREAM_CHUNK_TIMEOUT_SECS
+                ));
+            }
+            let resolved = if raw == 0 {
+                DEFAULT_STREAM_CHUNK_TIMEOUT_SECS
+            } else {
+                raw
+            };
+            app.stream_chunk_timeout_secs = resolved;
+            let value_label = stream_chunk_timeout_value_label(raw, resolved);
+            if persist {
+                match persist_tui_integer_key(
+                    app.config_path.as_deref(),
+                    "stream_chunk_timeout_secs",
+                    raw,
+                ) {
+                    Ok(path) => {
+                        return CommandResult::with_message_and_action(
+                            format!(
+                                "stream_chunk_timeout_secs = {value_label} (saved to {}; affects subsequent turns in this session)",
+                                path.display()
+                            ),
+                            AppAction::UpdateStreamChunkTimeout(resolved),
+                        );
+                    }
+                    Err(err) => return CommandResult::error(format!("Failed to save: {err}")),
+                }
+            }
+            return CommandResult::with_message_and_action(
+                format!(
+                    "stream_chunk_timeout_secs = {value_label} (session only; affects subsequent turns in this session)"
+                ),
+                AppAction::UpdateStreamChunkTimeout(resolved),
             );
         }
         _ => {}
@@ -2369,6 +2467,112 @@ mod tests {
             )
         );
         assert!(saved.contains("base_url = \"https://example.session.local/v1\""));
+    }
+
+    #[test]
+    fn config_command_stream_chunk_timeout_session_query_uses_live_value() {
+        let _lock = lock_test_env();
+        let mut app = create_test_app();
+
+        let result = config_command(&mut app, Some("stream_chunk_timeout_secs 90"));
+        assert!(!result.is_error);
+        assert_eq!(app.stream_chunk_timeout_secs, 90);
+        assert!(matches!(
+            result.action,
+            Some(AppAction::UpdateStreamChunkTimeout(90))
+        ));
+
+        let query = config_command(&mut app, Some("stream_chunk_timeout_secs"));
+        assert_eq!(
+            query.message.as_deref(),
+            Some("stream_chunk_timeout_secs = 90")
+        );
+    }
+
+    #[test]
+    fn config_command_stream_chunk_timeout_save_persists_tui_key() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_root = env::temp_dir().join(format!(
+            "codewhale-tui-stream-timeout-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&temp_root).unwrap();
+        let _guard = EnvGuard::new(&temp_root);
+
+        let config_path = temp_root.join("custom-config.toml");
+        let mut app = create_test_app();
+        app.config_path = Some(config_path.clone());
+
+        let result = config_command(&mut app, Some("stream_chunk_timeout_secs 120 --save"));
+        let msg = result.message.unwrap();
+        let saved = fs::read_to_string(&config_path).unwrap();
+
+        assert_eq!(
+            msg,
+            format!(
+                "stream_chunk_timeout_secs = 120 (saved to {}; affects subsequent turns in this session)",
+                config_path.display()
+            )
+        );
+        assert!(saved.contains("[tui]"));
+        assert!(saved.contains("stream_chunk_timeout_secs = 120"));
+        assert_eq!(app.stream_chunk_timeout_secs, 120);
+        assert!(matches!(
+            result.action,
+            Some(AppAction::UpdateStreamChunkTimeout(120))
+        ));
+    }
+
+    #[test]
+    fn config_command_stream_chunk_timeout_rejects_invalid_input() {
+        let _lock = lock_test_env();
+        let mut app = create_test_app();
+
+        let text = config_command(&mut app, Some("stream_chunk_timeout_secs abc"));
+        assert!(text.is_error);
+        assert!(
+            text.message
+                .unwrap()
+                .contains("stream_chunk_timeout_secs must be a whole number")
+        );
+
+        let high = config_command(&mut app, Some("stream_chunk_timeout_secs 3601"));
+        assert!(high.is_error);
+        assert!(
+            high.message
+                .unwrap()
+                .contains("stream_chunk_timeout_secs must be 0 or 1..=3600")
+        );
+    }
+
+    #[test]
+    fn config_command_stream_chunk_timeout_zero_reports_effective_default() {
+        let _lock = lock_test_env();
+        let mut app = create_test_app();
+
+        let result = config_command(&mut app, Some("stream_chunk_timeout_secs 0"));
+
+        assert!(!result.is_error);
+        assert_eq!(
+            app.stream_chunk_timeout_secs,
+            DEFAULT_STREAM_CHUNK_TIMEOUT_SECS
+        );
+        assert_eq!(
+            result.message.as_deref(),
+            Some(
+                "stream_chunk_timeout_secs = 0 (default 300) (session only; affects subsequent turns in this session)"
+            )
+        );
+        assert!(matches!(
+            result.action,
+            Some(AppAction::UpdateStreamChunkTimeout(
+                DEFAULT_STREAM_CHUNK_TIMEOUT_SECS
+            ))
+        ));
     }
 
     #[test]

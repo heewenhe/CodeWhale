@@ -39,6 +39,13 @@ pub const DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT_SECS: u64 = 300;
 pub const MIN_SUBAGENT_HEARTBEAT_TIMEOUT_SECS: u64 = 30;
 /// Maximum accepted `[subagents] heartbeat_timeout_secs` (1 hour).
 pub const MAX_SUBAGENT_HEARTBEAT_TIMEOUT_SECS: u64 = 3600;
+/// Default per-SSE-chunk idle timeout, in seconds.
+pub const DEFAULT_STREAM_CHUNK_TIMEOUT_SECS: u64 = 300;
+/// Minimum accepted stream chunk timeout.
+pub const MIN_STREAM_CHUNK_TIMEOUT_SECS: u64 = 1;
+/// Maximum accepted stream chunk timeout.
+pub const MAX_STREAM_CHUNK_TIMEOUT_SECS: u64 = 3600;
+pub(crate) const STREAM_CHUNK_TIMEOUT_ENV: &str = "DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS";
 pub const DEFAULT_TEXT_MODEL: &str = "deepseek-v4-pro";
 pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/beta";
 pub const DEFAULT_NVIDIA_NIM_MODEL: &str = "deepseek-ai/deepseek-v4-pro";
@@ -835,6 +842,9 @@ pub struct TuiConfig {
     /// Timeout for startup terminal mode/probe calls in milliseconds.
     /// Defaults to 500ms when omitted.
     pub terminal_probe_timeout_ms: Option<u64>,
+    /// Per-SSE-chunk idle timeout in seconds. Defaults to 300 seconds when
+    /// omitted. `0` maps to the default; values clamp to `1..=3600`.
+    pub stream_chunk_timeout_secs: Option<u64>,
     /// Ordered list of footer items the user wants visible. `None` (the field
     /// missing from `config.toml`) means "use the built-in default order"; an
     /// empty `Some(vec![])` means "show nothing in the footer".
@@ -2782,6 +2792,30 @@ impl Config {
             MAX_SUBAGENT_HEARTBEAT_TIMEOUT_SECS,
         );
         configured.max(min_for_api)
+    }
+
+    /// Resolved per-SSE-chunk idle timeout in seconds.
+    ///
+    /// Reads `[tui].stream_chunk_timeout_secs`, falling back to the legacy
+    /// `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` env var when the config key is
+    /// omitted. `None` or `0` resolve to the default 300 seconds; explicit
+    /// values are clamped to `1..=3600`.
+    #[must_use]
+    pub fn stream_chunk_timeout_secs(&self) -> u64 {
+        let raw = self
+            .tui
+            .as_ref()
+            .and_then(|cfg| cfg.stream_chunk_timeout_secs)
+            .or_else(|| {
+                std::env::var(STREAM_CHUNK_TIMEOUT_ENV)
+                    .ok()
+                    .and_then(|value| value.parse::<u64>().ok())
+            })
+            .unwrap_or(DEFAULT_STREAM_CHUNK_TIMEOUT_SECS);
+        if raw == 0 {
+            return DEFAULT_STREAM_CHUNK_TIMEOUT_SECS;
+        }
+        raw.clamp(MIN_STREAM_CHUNK_TIMEOUT_SECS, MAX_STREAM_CHUNK_TIMEOUT_SECS)
     }
 
     /// Raw sub-agent model override map. Values are validated at spawn time
@@ -6415,6 +6449,76 @@ mod tests {
             high.subagent_heartbeat_timeout_secs(),
             MAX_SUBAGENT_HEARTBEAT_TIMEOUT_SECS
         );
+    }
+
+    #[test]
+    fn tui_stream_chunk_timeout_defaults_env_and_clamps() {
+        let _lock = lock_test_env();
+        let previous = env::var_os(STREAM_CHUNK_TIMEOUT_ENV);
+        unsafe {
+            env::remove_var(STREAM_CHUNK_TIMEOUT_ENV);
+        }
+
+        assert_eq!(
+            Config::default().stream_chunk_timeout_secs(),
+            DEFAULT_STREAM_CHUNK_TIMEOUT_SECS
+        );
+
+        let zero = Config {
+            tui: Some(TuiConfig {
+                stream_chunk_timeout_secs: Some(0),
+                ..TuiConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert_eq!(
+            zero.stream_chunk_timeout_secs(),
+            DEFAULT_STREAM_CHUNK_TIMEOUT_SECS
+        );
+
+        let explicit_min = Config {
+            tui: Some(TuiConfig {
+                stream_chunk_timeout_secs: Some(MIN_STREAM_CHUNK_TIMEOUT_SECS),
+                ..TuiConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert_eq!(
+            explicit_min.stream_chunk_timeout_secs(),
+            MIN_STREAM_CHUNK_TIMEOUT_SECS
+        );
+
+        let high = Config {
+            tui: Some(TuiConfig {
+                stream_chunk_timeout_secs: Some(MAX_STREAM_CHUNK_TIMEOUT_SECS + 1),
+                ..TuiConfig::default()
+            }),
+            ..Config::default()
+        };
+        assert_eq!(
+            high.stream_chunk_timeout_secs(),
+            MAX_STREAM_CHUNK_TIMEOUT_SECS
+        );
+
+        unsafe {
+            env::set_var(STREAM_CHUNK_TIMEOUT_ENV, "123");
+        }
+        assert_eq!(Config::default().stream_chunk_timeout_secs(), 123);
+
+        unsafe {
+            env::set_var(STREAM_CHUNK_TIMEOUT_ENV, "0");
+        }
+        assert_eq!(
+            Config::default().stream_chunk_timeout_secs(),
+            DEFAULT_STREAM_CHUNK_TIMEOUT_SECS
+        );
+
+        unsafe {
+            match previous {
+                Some(value) => env::set_var(STREAM_CHUNK_TIMEOUT_ENV, value),
+                None => env::remove_var(STREAM_CHUNK_TIMEOUT_ENV),
+            }
+        }
     }
 
     #[test]

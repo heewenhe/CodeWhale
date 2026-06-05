@@ -2065,6 +2065,9 @@ impl RuntimeThreadManager {
             subagent_api_timeout: std::time::Duration::from_secs(
                 self.config.subagent_api_timeout_secs(),
             ),
+            stream_chunk_timeout: std::time::Duration::from_secs(
+                self.config.stream_chunk_timeout_secs(),
+            ),
             subagent_heartbeat_timeout: std::time::Duration::from_secs(
                 self.config.subagent_heartbeat_timeout_secs(),
             ),

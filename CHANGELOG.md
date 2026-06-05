@@ -49,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `completion_sound = "file"` with `[notifications].sound_file` so
   Windows users can play a custom WAV file for turn-completion sounds without
   changing the global Windows sound scheme (#2484, #2512).
+- Added `[tui].stream_chunk_timeout_secs` and `/config stream_chunk_timeout_secs`
+  so slow local or OpenAI-compatible model servers can extend the SSE idle
+  timeout without mutating process environment. The legacy
+  `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` env var remains a fallback (#2365, #2507).
 
 ### Changed
 

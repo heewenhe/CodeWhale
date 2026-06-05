@@ -84,6 +84,9 @@ pub enum Op {
     /// Update auto-compaction settings
     SetCompaction { config: CompactionConfig },
 
+    /// Update the SSE idle timeout used for subsequent streamed turns.
+    SetStreamChunkTimeout { timeout_secs: u64 },
+
     /// Sync engine session state (used for resume/load)
     SyncSession {
         session_id: Option<String>,

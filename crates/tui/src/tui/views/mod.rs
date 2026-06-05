@@ -532,6 +532,7 @@ enum ConfigSection {
     Provider,
     Model,
     Permissions,
+    Network,
     Display,
     Composer,
     Sidebar,
@@ -545,6 +546,7 @@ impl ConfigSection {
             ConfigSection::Provider => "Provider",
             ConfigSection::Model => "Model",
             ConfigSection::Permissions => "Permissions",
+            ConfigSection::Network => "Network",
             ConfigSection::Display => "Display",
             ConfigSection::Composer => "Composer",
             ConfigSection::Sidebar => "Sidebar",
@@ -657,6 +659,13 @@ impl ConfigView {
                 value: app.allow_shell.to_string(),
                 editable: true,
                 scope: ConfigScope::Saved,
+            },
+            ConfigRow {
+                section: ConfigSection::Network,
+                key: "stream_chunk_timeout_secs".to_string(),
+                value: app.stream_chunk_timeout_secs.to_string(),
+                editable: true,
+                scope: ConfigScope::Session,
             },
             ConfigRow {
                 section: ConfigSection::Display,
@@ -2371,6 +2380,7 @@ mod tests {
                 ConfigSection::Provider.label(),
                 ConfigSection::Model.label(),
                 ConfigSection::Permissions.label(),
+                ConfigSection::Network.label(),
                 ConfigSection::Display.label(),
                 ConfigSection::Composer.label(),
                 ConfigSection::Sidebar.label(),
@@ -2395,6 +2405,7 @@ mod tests {
         assert!(keys.contains(&"base_url"));
         assert!(keys.contains(&"approval_mode"));
         assert!(keys.contains(&"allow_shell"));
+        assert!(keys.contains(&"stream_chunk_timeout_secs"));
         assert!(keys.contains(&"theme"));
         assert!(keys.contains(&"locale"));
         assert!(keys.contains(&"background_color"));

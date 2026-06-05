@@ -1407,6 +1407,8 @@ pub struct App {
     pub max_input_history: usize,
     pub allow_shell: bool,
     pub max_subagents: usize,
+    /// Per-SSE-chunk idle timeout for streamed turns, in seconds.
+    pub stream_chunk_timeout_secs: u64,
     /// Cached sub-agent snapshots for UI views.
     pub subagent_cache: Vec<SubAgentResult>,
     /// Last known per-agent progress text for running sub-agents.
@@ -2136,6 +2138,7 @@ impl App {
             max_input_history,
             allow_shell,
             max_subagents,
+            stream_chunk_timeout_secs: config.stream_chunk_timeout_secs(),
             subagent_cache: Vec::new(),
             agent_progress: HashMap::new(),
             subagent_card_index: HashMap::new(),
@@ -5047,6 +5050,7 @@ pub enum AppAction {
         model: Option<String>,
     },
     UpdateCompaction(CompactionConfig),
+    UpdateStreamChunkTimeout(u64),
     OpenContextInspector,
     CompactContext,
     PurgeContext,

@@ -16,11 +16,6 @@ use tokio::time::timeout as tokio_timeout;
 
 use crate::config::wire_model_for_provider;
 
-/// Default idle timeout for SSE stream reads (300 seconds = 5 minutes).
-/// After this period with no data, the stream is considered stalled and
-/// yields a recoverable error so the caller can retry.
-const DEFAULT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
-
 /// Default timeout for the initial streaming response headers.
 ///
 /// `doctor` uses a bounded non-streaming request, but normal TUI turns first
@@ -45,17 +40,6 @@ fn stream_open_timeout_from_env(value: Option<&str>) -> Duration {
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(DEFAULT_STREAM_OPEN_TIMEOUT.as_secs())
         .clamp(5, 300);
-    Duration::from_secs(secs)
-}
-
-/// Reads the `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` env var, falling back to
-/// the default 300s. The parsed value is clamped to [1, 3600] seconds.
-fn stream_idle_timeout() -> Duration {
-    let secs = std::env::var("DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_STREAM_IDLE_TIMEOUT.as_secs())
-        .clamp(1, 3600);
     Duration::from_secs(secs)
 }
 
@@ -283,6 +267,7 @@ impl DeepSeekClient {
         // gzip-compressor failure when investigating #103.
         let response_headers = format_stream_headers(response.headers());
         let byte_stream = response.bytes_stream();
+        let stream_idle_timeout = self.stream_idle_timeout;
 
         let stream = async_stream::stream! {
             use futures_util::StreamExt;
@@ -315,7 +300,7 @@ impl DeepSeekClient {
             let is_reasoning_model = is_reasoning_model_for_stream(api_provider, &model);
 
             let mut byte_stream = std::pin::pin!(byte_stream);
-            let idle = stream_idle_timeout();
+            let idle = stream_idle_timeout;
 
             // Telemetry for #103 stream-decode diagnostics: bytes received
             // since the start of this stream and last successful event time.
