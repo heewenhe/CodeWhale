@@ -1,6 +1,7 @@
 pub mod provider;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::fs;
 #[cfg(unix)]
 use std::io::Write;
@@ -539,6 +540,10 @@ pub struct ConfigToml {
     /// v0.9 slices; this is the durable config data model.
     #[serde(default)]
     pub harness_profiles: Vec<HarnessProfile>,
+    /// Optional 1-8 hotbar slot bindings (#2064). When absent, the TUI falls
+    /// back to the built-in default slots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotbar: Option<Vec<HotbarBindingToml>>,
     /// App-server hook sink configuration. Kept separate from the TUI
     /// lifecycle `[hooks]` table so config rewrites preserve existing hooks.
     #[serde(default)]
@@ -562,6 +567,16 @@ impl ConfigToml {
         self.harness_profiles
             .iter()
             .find(|profile| profile.matches_route(provider_route, model))
+    }
+
+    /// Resolve durable hotbar config into normalized 1-8 slot bindings.
+    ///
+    /// `known_action_ids` is supplied by the TUI action registry in later
+    /// slices. Unknown actions are preserved so the UI can render a disabled
+    /// `?` cell instead of silently deleting user config.
+    #[must_use]
+    pub fn resolve_hotbar_bindings(&self, known_action_ids: &[&str]) -> HotbarConfigResolution {
+        resolve_hotbar_bindings(self.hotbar.as_deref(), known_action_ids)
     }
 }
 
@@ -614,6 +629,148 @@ fn wildcard_chars_match(pattern: &[char], value: &[char]) -> bool {
 pub struct ProviderChain {
     providers: Vec<ProviderKind>,
     position: usize,
+}
+
+pub const HOTBAR_SLOT_COUNT: u8 = 8;
+
+pub const DEFAULT_HOTBAR_ACTIONS: [&str; HOTBAR_SLOT_COUNT as usize] = [
+    "voice.toggle",
+    "session.compact",
+    "mode.plan",
+    "mode.agent",
+    "mode.yolo",
+    "palette.open",
+    "sidebar.toggle",
+    "trust.toggle",
+];
+
+/// On-disk schema for one `[[hotbar]]` table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HotbarBindingToml {
+    pub slot: u8,
+    pub action: String,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// Validated hotbar binding used by future render/dispatch layers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotbarBinding {
+    pub slot: u8,
+    pub action: String,
+    pub label: Option<String>,
+}
+
+/// Non-fatal hotbar config issue. Invalid slots are skipped; duplicate slots
+/// use the last binding; unknown actions are kept for UI feedback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HotbarConfigWarning {
+    SlotOutOfRange {
+        slot: u8,
+        action: String,
+    },
+    DuplicateSlot {
+        slot: u8,
+        previous_action: String,
+        replacement_action: String,
+    },
+    UnknownAction {
+        slot: u8,
+        action: String,
+    },
+}
+
+impl fmt::Display for HotbarConfigWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SlotOutOfRange { slot, action } => write!(
+                f,
+                "hotbar slot {slot} for action '{action}' is outside 1-{HOTBAR_SLOT_COUNT}; skipped"
+            ),
+            Self::DuplicateSlot {
+                slot,
+                previous_action,
+                replacement_action,
+            } => write!(
+                f,
+                "hotbar slot {slot} was bound to '{previous_action}' more than once; using '{replacement_action}'"
+            ),
+            Self::UnknownAction { slot, action } => write!(
+                f,
+                "hotbar slot {slot} references unknown action '{action}'; keeping binding"
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HotbarConfigResolution {
+    pub bindings: Vec<HotbarBinding>,
+    pub warnings: Vec<HotbarConfigWarning>,
+}
+
+#[must_use]
+pub fn default_hotbar_bindings() -> Vec<HotbarBinding> {
+    DEFAULT_HOTBAR_ACTIONS
+        .iter()
+        .enumerate()
+        .map(|(idx, action)| HotbarBinding {
+            slot: u8::try_from(idx + 1).expect("default hotbar slot fits in u8"),
+            action: (*action).to_string(),
+            label: None,
+        })
+        .collect()
+}
+
+#[must_use]
+pub fn resolve_hotbar_bindings(
+    configured: Option<&[HotbarBindingToml]>,
+    known_action_ids: &[&str],
+) -> HotbarConfigResolution {
+    let known = known_action_ids.iter().copied().collect::<BTreeSet<&str>>();
+    let mut warnings = Vec::new();
+
+    let source = match configured {
+        Some(bindings) => bindings
+            .iter()
+            .map(|binding| HotbarBinding {
+                slot: binding.slot,
+                action: binding.action.clone(),
+                label: binding.label.clone(),
+            })
+            .collect::<Vec<_>>(),
+        None => default_hotbar_bindings(),
+    };
+
+    let mut by_slot: BTreeMap<u8, HotbarBinding> = BTreeMap::new();
+    for binding in source {
+        if !(1..=HOTBAR_SLOT_COUNT).contains(&binding.slot) {
+            warnings.push(HotbarConfigWarning::SlotOutOfRange {
+                slot: binding.slot,
+                action: binding.action,
+            });
+            continue;
+        }
+        if !known.is_empty() && !known.contains(binding.action.as_str()) {
+            warnings.push(HotbarConfigWarning::UnknownAction {
+                slot: binding.slot,
+                action: binding.action.clone(),
+            });
+        }
+        if let Some(previous) = by_slot.insert(binding.slot, binding.clone()) {
+            warnings.push(HotbarConfigWarning::DuplicateSlot {
+                slot: binding.slot,
+                previous_action: previous.action,
+                replacement_action: binding.action,
+            });
+        }
+    }
+
+    HotbarConfigResolution {
+        bindings: by_slot.into_values().collect(),
+        warnings,
+    }
 }
 
 impl ProviderChain {
@@ -3174,6 +3331,132 @@ mod tests {
         .expect_err("permissions.toml should be ask-only in this slice");
 
         assert!(err.message().contains("unknown field"));
+    }
+
+    #[test]
+    fn hotbar_defaults_when_config_is_absent() {
+        let config = ConfigToml::default();
+
+        let resolved = config.resolve_hotbar_bindings(&DEFAULT_HOTBAR_ACTIONS);
+
+        assert_eq!(resolved.warnings, Vec::new());
+        assert_eq!(resolved.bindings, default_hotbar_bindings());
+        assert_eq!(
+            resolved
+                .bindings
+                .iter()
+                .map(|binding| (binding.slot, binding.action.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, "voice.toggle"),
+                (2, "session.compact"),
+                (3, "mode.plan"),
+                (4, "mode.agent"),
+                (5, "mode.yolo"),
+                (6, "palette.open"),
+                (7, "sidebar.toggle"),
+                (8, "trust.toggle"),
+            ]
+        );
+    }
+
+    #[test]
+    fn hotbar_tables_parse_and_round_trip() {
+        let config: ConfigToml = toml::from_str(
+            r#"
+[[hotbar]]
+slot = 1
+label = "Plan"
+action = "mode.plan"
+
+[[hotbar]]
+slot = 2
+action = "session.compact"
+"#,
+        )
+        .expect("parse hotbar tables");
+
+        let resolved = config.resolve_hotbar_bindings(&["mode.plan", "session.compact"]);
+
+        assert_eq!(
+            resolved.bindings,
+            vec![
+                HotbarBinding {
+                    slot: 1,
+                    action: "mode.plan".to_string(),
+                    label: Some("Plan".to_string()),
+                },
+                HotbarBinding {
+                    slot: 2,
+                    action: "session.compact".to_string(),
+                    label: None,
+                },
+            ]
+        );
+        assert_eq!(resolved.warnings, Vec::new());
+
+        let serialized = toml::to_string_pretty(&config).expect("serialize config");
+        let round_tripped: ConfigToml =
+            toml::from_str(&serialized).expect("deserialize serialized config");
+        assert_eq!(round_tripped.hotbar, config.hotbar);
+    }
+
+    #[test]
+    fn hotbar_validation_warns_without_dropping_unknown_actions() {
+        let config: ConfigToml = toml::from_str(
+            r#"
+[[hotbar]]
+slot = 0
+action = "mode.plan"
+
+[[hotbar]]
+slot = 2
+action = "mode.plan"
+
+[[hotbar]]
+slot = 2
+action = "custom.action"
+
+[[hotbar]]
+slot = 9
+action = "mode.agent"
+"#,
+        )
+        .expect("parse hotbar tables");
+
+        let resolved = config.resolve_hotbar_bindings(&["mode.plan", "mode.agent"]);
+
+        assert_eq!(
+            resolved.bindings,
+            vec![HotbarBinding {
+                slot: 2,
+                action: "custom.action".to_string(),
+                label: None,
+            }]
+        );
+        assert_eq!(
+            resolved.warnings,
+            vec![
+                HotbarConfigWarning::SlotOutOfRange {
+                    slot: 0,
+                    action: "mode.plan".to_string(),
+                },
+                HotbarConfigWarning::UnknownAction {
+                    slot: 2,
+                    action: "custom.action".to_string(),
+                },
+                HotbarConfigWarning::DuplicateSlot {
+                    slot: 2,
+                    previous_action: "mode.plan".to_string(),
+                    replacement_action: "custom.action".to_string(),
+                },
+                HotbarConfigWarning::SlotOutOfRange {
+                    slot: 9,
+                    action: "mode.agent".to_string(),
+                },
+            ]
+        );
+        assert!(resolved.warnings[1].to_string().contains("keeping binding"));
     }
 
     #[test]

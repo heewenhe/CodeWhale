@@ -1656,6 +1656,11 @@ pub struct Config {
     #[serde(default)]
     pub auto: Option<AutoConfig>,
 
+    /// Optional 1-8 hotbar slot bindings (#2064). When absent, future hotbar
+    /// UI slices use the built-in defaults from `codewhale_config`.
+    #[serde(default)]
+    pub hotbar: Option<Vec<codewhale_config::HotbarBindingToml>>,
+
     /// Startup update-check behavior. When absent, the TUI keeps the default
     /// fire-and-forget latest-release check.
     #[serde(default)]
@@ -2916,6 +2921,15 @@ impl Config {
     #[must_use]
     pub fn update_config(&self) -> UpdateConfig {
         self.update.clone().unwrap_or_default()
+    }
+
+    /// Resolve durable hotbar bindings for future render/dispatch layers.
+    #[must_use]
+    pub fn resolve_hotbar_bindings(
+        &self,
+        known_action_ids: &[&str],
+    ) -> codewhale_config::HotbarConfigResolution {
+        codewhale_config::resolve_hotbar_bindings(self.hotbar.as_deref(), known_action_ids)
     }
 
     /// Resolve enabled features from defaults and config entries.
@@ -4495,6 +4509,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         memory: override_cfg.memory.or(base.memory),
         speech: override_cfg.speech.or(base.speech),
         auto: override_cfg.auto.or(base.auto),
+        hotbar: override_cfg.hotbar.or(base.hotbar),
         update: override_cfg.update.or(base.update),
         lsp: override_cfg.lsp.or(base.lsp),
         context: ContextConfig {
@@ -5645,6 +5660,39 @@ mod tests {
         // A parsed config from the correct placement actually enables shell.
         let parsed: ConfigFile = toml::from_str(ok).expect("parse top-level config");
         assert!(parsed.base.allow_shell());
+    }
+
+    #[test]
+    fn tui_config_parses_hotbar_bindings() {
+        let raw = r#"
+[[hotbar]]
+slot = 1
+label = "Plan"
+action = "mode.plan"
+
+[[hotbar]]
+slot = 2
+action = "session.compact"
+"#;
+        let parsed: ConfigFile = toml::from_str(raw).expect("parse hotbar config");
+
+        let resolved = parsed
+            .base
+            .resolve_hotbar_bindings(&["mode.plan", "session.compact"]);
+
+        assert_eq!(resolved.warnings, Vec::new());
+        assert_eq!(
+            resolved
+                .bindings
+                .iter()
+                .map(|binding| (
+                    binding.slot,
+                    binding.action.as_str(),
+                    binding.label.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![(1, "mode.plan", Some("Plan")), (2, "session.compact", None),]
+        );
     }
 
     #[test]
