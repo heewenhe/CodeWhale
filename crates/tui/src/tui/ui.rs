@@ -1743,6 +1743,9 @@ async fn run_event_loop(
                                 | "update_plan"
                                 | "task_shell_start"
                                 | "exec_shell"
+                                | "exec_shell_cancel"
+                                | "exec_shell_wait"
+                                | "task_cancel"
                         ) {
                             refresh_active_task_panel(app, &task_manager).await;
                             last_task_refresh = Instant::now();
@@ -6367,6 +6370,10 @@ async fn apply_command_result(
             }
             AppAction::ShellJob(action) => {
                 handle_shell_job_action(app, action);
+                // Immediately sync the task panel after cancel/poll so the
+                // Tasks sidebar stays accurate without waiting for the
+                // next 2.5 s periodic refresh (#2937).
+                refresh_active_task_panel(app, task_manager).await;
             }
             AppAction::Mcp(action) => {
                 handle_mcp_ui_action(app, config, action).await;
