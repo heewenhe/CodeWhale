@@ -269,6 +269,67 @@ POST /v1/fleet/runs/{run_id}/stop
 Action endpoints call the same manager controls as the CLI and record their
 decisions in the fleet ledger.
 
+## Manager-Agent Runbook
+
+Manager agents should treat Fleet operations as typed, ledgered control-plane
+work. Start with `codewhale fleet status`, then inspect one run or worker with
+`codewhale fleet inspect <worker-id>`, `logs`, and `artifacts`. Use direct
+reads of `.codewhale/fleet.jsonl`, host logs, or remote files only when the
+typed CLI/API surface cannot provide the required evidence.
+
+Classify the worker before taking action:
+
+- `transient failure`: stale heartbeat, host timeout, interrupted transport,
+  retryable provider/network error, or an adapter status that can plausibly
+  recover without changing the task.
+- `task failure`: the worker completed but produced an incorrect result,
+  domain failure, missing required artifact, or explicit task-level error.
+- `verifier failure`: the worker result exists, but the scorer/verifier failed,
+  timed out, or disagrees with the receipt.
+- `needs-human`: missing authority, secret request, destructive operation,
+  repeated restart exhaustion, ambiguous product decision, or conflicting
+  evidence that the manager cannot resolve from typed artifacts.
+
+Choose one typed action:
+
+- Restart a worker only when the failure is transient, retry budget remains,
+  the task is idempotent or retry-safe, and no permission or secret boundary is
+  involved: `codewhale fleet restart <worker-id>`.
+- Interrupt or stop only when the current task is unsafe to continue or the
+  operator explicitly asks for cancellation: `codewhale fleet interrupt
+  <worker-id>` or `codewhale fleet stop --all`.
+- Do not restart pure task failures by default; preserve artifacts and hand the
+  receipt to the task owner unless the task spec says retrying can produce new
+  evidence.
+- For verifier failures, inspect scorer inputs and artifact refs first. If the
+  verifier cannot be corrected through typed fleet actions, escalate for human
+  review.
+- For `needs-human`, draft an escalation instead of sending it unless alert
+  config explicitly authorizes sending.
+
+Safe Slack or PagerDuty draft:
+
+```text
+CodeWhale fleet needs attention
+Run: <run-id>
+Worker: <worker-id>
+Task: <task-id or unknown>
+Classification: <transient failure | task failure | verifier failure | needs-human>
+Reason: <one sentence, no secrets>
+Latest typed evidence: codewhale fleet inspect <worker-id>; codewhale fleet artifacts <worker-id>
+Safe log excerpt: <3 lines max or "see artifact <ref>">
+Requested decision: <restart approval | verifier review | task owner review | permission decision>
+```
+
+Post-run summaries should include the run id, workers checked, classification,
+typed action taken or drafted, expected ledger effect, artifact refs reviewed,
+and next owner. Keep summaries bounded; link artifact refs instead of copying
+full logs or transcripts.
+
+The bundled `fleet-manager` skill mirrors this runbook for manager agents. It
+is a first-party system skill and should be discoverable through the normal
+skill registry after system skills are installed or refreshed.
+
 ## Host Adapters
 
 The host adapter boundary supports local child processes and explicit SSH
