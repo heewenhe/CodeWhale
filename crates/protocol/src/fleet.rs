@@ -72,7 +72,24 @@ pub struct FleetTaskSpec {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
     pub instructions: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker: Option<FleetTaskWorkerProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<FleetWorkspaceRequirements>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub input_files: Vec<PathBuf>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub context: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget: Option<FleetTaskBudget>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(default)]
     pub expected_artifacts: Vec<FleetArtifactKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -85,6 +102,58 @@ pub struct FleetTaskSpec {
     pub timeout_seconds: Option<u64>,
     #[serde(default)]
     pub metadata: BTreeMap<String, Value>,
+}
+
+/// Worker role and tool expectations for a task.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct FleetTaskWorkerProfile {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_profile: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+/// Workspace and environment constraints needed before a task starts.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct FleetWorkspaceRequirements {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root: Option<PathBuf>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub required_files: Vec<PathBuf>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub writable_paths: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<FleetEnvironmentRequirements>,
+}
+
+/// Environment variables a task requires or may pass through to workers.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct FleetEnvironmentRequirements {
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allowlist: Vec<String>,
+}
+
+/// Budget limits for a task.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct FleetTaskBudget {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tool_calls: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_seconds: Option<u64>,
 }
 
 /// Reference to an artifact produced or consumed by a task.
@@ -162,9 +231,25 @@ impl<'de> Deserialize<'de> for FleetArtifactKind {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FleetScorerSpec {
     ExitCode,
-    FileExists { path: PathBuf },
-    RegexMatch { path: PathBuf, pattern: String },
-    JsonPath { path: PathBuf, expression: String },
+    FileExists {
+        path: PathBuf,
+    },
+    RegexMatch {
+        path: PathBuf,
+        pattern: String,
+    },
+    JsonPath {
+        path: PathBuf,
+        expression: String,
+    },
+    Command {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    CodeWhaleVerifierPrompt {
+        prompt: String,
+    },
     Manual,
 }
 
@@ -390,6 +475,8 @@ pub struct FleetReceipt {
     pub worker_id: String,
     pub completed_at: String,
     pub result: FleetTaskResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<FleetTaskFailureKind>,
     #[serde(default)]
     pub artifacts: Vec<FleetArtifactRef>,
     #[serde(default)]
@@ -400,9 +487,19 @@ pub struct FleetReceipt {
 #[serde(rename_all = "snake_case")]
 pub enum FleetTaskResult {
     Pass,
+    Partial,
     Fail,
     Skip,
     Timeout,
+}
+
+/// Source category for a failed task receipt.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FleetTaskFailureKind {
+    Transport,
+    Task,
+    Verifier,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -428,7 +525,31 @@ mod tests {
                 id: "task-1".to_string(),
                 name: "lint".to_string(),
                 description: None,
+                objective: Some("Keep the workspace lint-clean".to_string()),
                 instructions: "run cargo clippy".to_string(),
+                worker: Some(FleetTaskWorkerProfile {
+                    role: Some("release-checker".to_string()),
+                    tool_profile: Some("read-only".to_string()),
+                    tools: vec!["cargo".to_string()],
+                    capabilities: vec!["rust".to_string()],
+                }),
+                workspace: Some(FleetWorkspaceRequirements {
+                    root: Some(PathBuf::from(".")),
+                    required_files: vec![PathBuf::from("Cargo.toml")],
+                    writable_paths: vec![],
+                    environment: Some(FleetEnvironmentRequirements {
+                        required: vec!["PATH".to_string()],
+                        allowlist: vec!["RUST_LOG".to_string()],
+                    }),
+                }),
+                input_files: vec![PathBuf::from("crates/tui/src/main.rs")],
+                context: vec!["release gate".to_string()],
+                budget: Some(FleetTaskBudget {
+                    max_tokens: Some(8000),
+                    max_tool_calls: Some(20),
+                    max_seconds: Some(300),
+                }),
+                tags: vec!["release".to_string()],
                 expected_artifacts: vec![FleetArtifactKind::Log],
                 scorer: Some(FleetScorerSpec::ExitCode),
                 retry_policy: Some(FleetRetryPolicy::default()),
@@ -447,6 +568,18 @@ mod tests {
         assert_eq!(back.id, run.id);
         assert_eq!(back.status, FleetRunStatus::Running);
         assert_eq!(back.task_specs.len(), 1);
+        assert_eq!(
+            back.task_specs[0].worker.as_ref().unwrap().role.as_deref(),
+            Some("release-checker")
+        );
+        assert_eq!(
+            back.task_specs[0]
+                .workspace
+                .as_ref()
+                .unwrap()
+                .required_files,
+            vec![PathBuf::from("Cargo.toml")]
+        );
     }
 
     #[test]
@@ -613,6 +746,7 @@ mod tests {
             worker_id: "worker-b".to_string(),
             completed_at: "2026-06-12T17:03:00Z".to_string(),
             result: FleetTaskResult::Pass,
+            failure_kind: None,
             artifacts: vec![],
             score: Some(FleetScore {
                 value: 0.95,
@@ -624,5 +758,30 @@ mod tests {
         let back: FleetReceipt = serde_json::from_str(&json).unwrap();
         assert_eq!(back.result, FleetTaskResult::Pass);
         assert_eq!(back.score.as_ref().unwrap().value, 0.95);
+    }
+
+    #[test]
+    fn partial_receipt_records_failure_source_when_needed() {
+        let receipt = FleetReceipt {
+            run_id: FleetRunId::from("run-004"),
+            task_id: "task-2".to_string(),
+            worker_id: "worker-c".to_string(),
+            completed_at: "2026-06-12T17:04:00Z".to_string(),
+            result: FleetTaskResult::Partial,
+            failure_kind: Some(FleetTaskFailureKind::Verifier),
+            artifacts: vec![],
+            score: Some(FleetScore {
+                value: 0.5,
+                max: Some(1.0),
+                notes: Some("manual verification required".to_string()),
+            }),
+        };
+
+        let json = serde_json::to_string(&receipt).unwrap();
+        assert!(json.contains("\"result\":\"partial\""));
+        assert!(json.contains("\"failure_kind\":\"verifier\""));
+        let back: FleetReceipt = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.result, FleetTaskResult::Partial);
+        assert_eq!(back.failure_kind, Some(FleetTaskFailureKind::Verifier));
     }
 }

@@ -892,6 +892,7 @@ mod tests {
                 worker_id: "worker-1".to_string(),
                 completed_at: "2026-06-12T17:03:00Z".to_string(),
                 result: FleetTaskResult::Pass,
+                failure_kind: None,
                 artifacts: vec![],
                 score: None,
             })
@@ -923,6 +924,7 @@ mod tests {
             worker_id: "worker-1".to_string(),
             completed_at: "2026-06-12T17:03:00Z".to_string(),
             result: FleetTaskResult::Pass,
+            failure_kind: None,
             artifacts: vec![],
             score: None,
         };

@@ -13,11 +13,14 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, SecondsFormat, Utc};
 use codewhale_protocol::fleet::*;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
 use super::ledger::{FleetLedger, FleetLedgerState, FleetTaskLedgerStatus, FleetTaskState};
+use super::task_spec::{
+    FleetTaskSpecDocument, FleetTaskVerificationInput, load_task_spec_document,
+    record_verification_receipt, validate_task_spec_document, verify_task_result,
+};
 
 const DEFAULT_STALE_AFTER_SECONDS: u64 = 300;
 
@@ -49,7 +52,11 @@ pub struct FleetStatusSnapshot {
     pub queued: usize,
     pub running: usize,
     pub completed: usize,
+    pub partial: usize,
     pub failed: usize,
+    pub transport_failed: usize,
+    pub task_failed: usize,
+    pub verifier_failed: usize,
     pub cancelled: usize,
     pub stale: usize,
     pub workers: BTreeMap<String, FleetWorkerStatus>,
@@ -65,51 +72,6 @@ pub struct FleetWorkerInspection {
     pub latest_event: Option<FleetWorkerEvent>,
     pub artifacts: Vec<FleetArtifactRef>,
     pub last_error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FleetTaskSpecDocument {
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub labels: BTreeMap<String, String>,
-    #[serde(default, alias = "worker_specs")]
-    pub workers: Vec<FleetWorkerSpec>,
-    #[serde(default)]
-    pub tasks: Vec<FleetTaskSpec>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum FleetTaskSpecFile {
-    Document(FleetTaskSpecDocument),
-    Tasks(Vec<FleetTaskSpec>),
-    Single(FleetTaskSpec),
-}
-
-impl FleetTaskSpecFile {
-    fn into_document(self, fallback_name: String) -> FleetTaskSpecDocument {
-        match self {
-            Self::Document(mut doc) => {
-                if doc.name.as_deref().is_none_or(str::is_empty) {
-                    doc.name = Some(fallback_name);
-                }
-                doc
-            }
-            Self::Tasks(tasks) => FleetTaskSpecDocument {
-                name: Some(fallback_name),
-                labels: BTreeMap::new(),
-                workers: Vec::new(),
-                tasks,
-            },
-            Self::Single(task) => FleetTaskSpecDocument {
-                name: Some(fallback_name),
-                labels: BTreeMap::new(),
-                workers: Vec::new(),
-                tasks: vec![task],
-            },
-        }
-    }
 }
 
 impl FleetManager {
@@ -133,23 +95,7 @@ impl FleetManager {
     }
 
     pub fn load_task_spec(path: &Path) -> Result<FleetTaskSpecDocument> {
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("reading fleet task spec {}", path.display()))?;
-        let fallback_name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("fleet-run")
-            .to_string();
-        let parsed = match path.extension().and_then(|s| s.to_str()) {
-            Some("toml") => toml::from_str::<FleetTaskSpecFile>(&raw)
-                .with_context(|| format!("parsing TOML fleet task spec {}", path.display()))?,
-            _ => serde_json::from_str::<FleetTaskSpecFile>(&raw)
-                .with_context(|| format!("parsing JSON fleet task spec {}", path.display()))?,
-        };
-        let doc = parsed.into_document(fallback_name);
-        validate_task_spec_document(&doc)?;
-        Ok(doc)
+        load_task_spec_document(path)
     }
 
     pub fn create_run_from_task_spec_path(
@@ -471,13 +417,15 @@ impl FleetManager {
             return Ok(());
         };
         let now = timestamp();
-        let (payload, receipt_result) = match result {
+        let (payload, receipt_result, failure_kind, exit_code) = match result {
             FleetLocalSimulationResult::Pass => (
                 FleetWorkerEventPayload::Completed {
                     exit_code: Some(0),
                     summary: Some("local fleet smoke task completed".to_string()),
                 },
                 FleetTaskResult::Pass,
+                None,
+                Some(0),
             ),
             FleetLocalSimulationResult::Fail => (
                 FleetWorkerEventPayload::Failed {
@@ -485,6 +433,8 @@ impl FleetManager {
                     recoverable: false,
                 },
                 FleetTaskResult::Fail,
+                Some(FleetTaskFailureKind::Task),
+                Some(1),
             ),
             FleetLocalSimulationResult::Skip => (
                 FleetWorkerEventPayload::Completed {
@@ -492,6 +442,8 @@ impl FleetManager {
                     summary: Some("local fleet smoke task skipped".to_string()),
                 },
                 FleetTaskResult::Skip,
+                None,
+                Some(0),
             ),
             FleetLocalSimulationResult::Timeout => (
                 FleetWorkerEventPayload::Failed {
@@ -499,15 +451,47 @@ impl FleetManager {
                     recoverable: true,
                 },
                 FleetTaskResult::Timeout,
+                Some(FleetTaskFailureKind::Transport),
+                None,
             ),
         };
         self.append_worker_event(&entry.run_id, worker_id, &entry.task_id, payload)?;
+        let verification_input = FleetTaskVerificationInput {
+            run_id: entry.run_id.clone(),
+            task_id: entry.task_id.clone(),
+            worker_id: worker_id.to_string(),
+            exit_code,
+            artifacts: vec![log_artifact.clone()],
+        };
+        if task_spec.scorer.is_some() {
+            let verification = verify_task_result(&self.workspace, task_spec, &verification_input);
+            let receipt = record_verification_receipt(
+                &self.ledger,
+                &self.workspace,
+                &verification_input,
+                verification,
+            )?;
+            if matches!(
+                receipt.result,
+                FleetTaskResult::Fail | FleetTaskResult::Timeout
+            ) {
+                self.ledger.mark_task_terminal_status(
+                    &entry.run_id,
+                    &entry.task_id,
+                    Some(worker_id),
+                    &timestamp(),
+                    FleetTaskLedgerStatus::Failed,
+                )?;
+            }
+            return Ok(());
+        }
         self.ledger.record_receipt(FleetReceipt {
             run_id: entry.run_id.clone(),
             task_id: entry.task_id.clone(),
             worker_id: worker_id.to_string(),
             completed_at: now,
             result: receipt_result,
+            failure_kind,
             artifacts: vec![log_artifact],
             score: None,
         })
@@ -633,6 +617,20 @@ impl FleetManager {
                 FleetTaskLedgerStatus::Cancelled => snapshot.cancelled += 1,
             }
         }
+        for receipt in state.receipts.values() {
+            if run_filter.is_some_and(|run_id| receipt.run_id != *run_id) {
+                continue;
+            }
+            if receipt.result == FleetTaskResult::Partial {
+                snapshot.partial += 1;
+            }
+            match &receipt.failure_kind {
+                Some(FleetTaskFailureKind::Transport) => snapshot.transport_failed += 1,
+                Some(FleetTaskFailureKind::Task) => snapshot.task_failed += 1,
+                Some(FleetTaskFailureKind::Verifier) => snapshot.verifier_failed += 1,
+                None => {}
+            }
+        }
         snapshot
     }
 
@@ -658,28 +656,6 @@ enum FleetLocalSimulationResult {
     Fail,
     Skip,
     Timeout,
-}
-
-fn validate_task_spec_document(doc: &FleetTaskSpecDocument) -> Result<()> {
-    if doc.tasks.is_empty() {
-        bail!("fleet task spec must include at least one task");
-    }
-    let mut ids = BTreeSet::new();
-    for task in &doc.tasks {
-        if task.id.trim().is_empty() {
-            bail!("fleet task id cannot be empty");
-        }
-        if !ids.insert(task.id.clone()) {
-            bail!("duplicate fleet task id {}", task.id);
-        }
-        if task.name.trim().is_empty() {
-            bail!("fleet task {} name cannot be empty", task.id);
-        }
-        if task.instructions.trim().is_empty() {
-            bail!("fleet task {} instructions cannot be empty", task.id);
-        }
-    }
-    Ok(())
 }
 
 fn default_local_workers(run_id: &FleetRunId, max_workers: usize) -> Vec<FleetWorkerSpec> {
@@ -876,7 +852,14 @@ mod tests {
             id: id.to_string(),
             name: id.to_string(),
             description: None,
+            objective: Some(format!("Complete {id}")),
             instructions: format!("do {id}"),
+            worker: None,
+            workspace: None,
+            input_files: Vec::new(),
+            context: Vec::new(),
+            budget: None,
+            tags: Vec::new(),
             expected_artifacts: vec![FleetArtifactKind::Log],
             scorer: None,
             retry_policy: None,
@@ -978,5 +961,106 @@ mod tests {
         assert_eq!(status.running, 0);
         let state = manager.ledger.rebuild_state().unwrap();
         assert_eq!(state.receipts.len(), 1);
+    }
+
+    #[test]
+    fn fleet_task_spec_sample_launches_independent_worker_tasks() {
+        let tmp = TempDir::new().unwrap();
+        let manager = FleetManager::open(tmp.path()).unwrap();
+        let path = task_spec_file(
+            &tmp,
+            vec![
+                task("release-triage"),
+                task("risk-review"),
+                task("docs-check"),
+            ],
+        );
+
+        let report = manager.create_run_from_task_spec_path(&path, 2).unwrap();
+
+        assert_eq!(report.task_count, 3);
+        assert_eq!(report.leased, 2);
+        assert_eq!(report.queued, 1);
+        assert_ne!(report.worker_ids[0], report.worker_ids[1]);
+        let state = manager.ledger.rebuild_state().unwrap();
+        assert!(
+            state
+                .tasks
+                .contains_key(&format!("{}:release-triage", report.run_id.0))
+        );
+        assert!(
+            state
+                .tasks
+                .contains_key(&format!("{}:risk-review", report.run_id.0))
+        );
+        assert!(
+            state
+                .tasks
+                .contains_key(&format!("{}:docs-check", report.run_id.0))
+        );
+    }
+
+    #[test]
+    fn fleet_task_spec_local_scorer_records_receipt_artifact() {
+        let tmp = TempDir::new().unwrap();
+        let manager = FleetManager::open(tmp.path()).unwrap();
+        let mut completed = task("task-a");
+        completed.scorer = Some(FleetScorerSpec::ExitCode);
+        completed
+            .metadata
+            .insert("local_result".to_string(), json!("pass"));
+        let path = task_spec_file(&tmp, vec![completed]);
+
+        let report = manager.create_run_from_task_spec_path(&path, 1).unwrap();
+
+        let status = manager.run_status(&report.run_id).unwrap();
+        assert_eq!(status.completed, 1);
+        assert_eq!(status.failed, 0);
+        assert_eq!(status.partial, 0);
+        let state = manager.ledger.rebuild_state().unwrap();
+        let receipt = &state.receipts[&format!("{}:task-a", report.run_id.0)];
+        assert_eq!(receipt.result, FleetTaskResult::Pass);
+        assert_eq!(receipt.failure_kind, None);
+        assert!(receipt.score.as_ref().unwrap().value > 0.99);
+        assert!(
+            receipt
+                .artifacts
+                .iter()
+                .any(|artifact| matches!(artifact.kind, FleetArtifactKind::Receipt))
+        );
+    }
+
+    #[test]
+    fn fleet_task_spec_status_distinguishes_failure_sources() {
+        let tmp = TempDir::new().unwrap();
+        let manager = FleetManager::open(tmp.path()).unwrap();
+        let mut transport = task("transport-failure");
+        transport.scorer = Some(FleetScorerSpec::ExitCode);
+        transport
+            .metadata
+            .insert("local_result".to_string(), json!("timeout"));
+        let mut task_failed = task("task-failure");
+        task_failed.scorer = Some(FleetScorerSpec::ExitCode);
+        task_failed
+            .metadata
+            .insert("local_result".to_string(), json!("fail"));
+        let mut verifier_failed = task("verifier-failure");
+        verifier_failed.scorer = Some(FleetScorerSpec::RegexMatch {
+            path: PathBuf::from("missing.log"),
+            pattern: "[".to_string(),
+        });
+        verifier_failed
+            .metadata
+            .insert("local_result".to_string(), json!("pass"));
+        let path = task_spec_file(&tmp, vec![transport, task_failed, verifier_failed]);
+
+        let report = manager.create_run_from_task_spec_path(&path, 3).unwrap();
+
+        let status = manager.run_status(&report.run_id).unwrap();
+        assert_eq!(status.failed, 3);
+        assert_eq!(status.transport_failed, 1);
+        assert_eq!(status.task_failed, 1);
+        assert_eq!(status.verifier_failed, 1);
+        assert_eq!(status.running, 0);
     }
 }

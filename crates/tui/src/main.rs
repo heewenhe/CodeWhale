@@ -1474,12 +1474,16 @@ async fn run_fleet_command(workspace: &Path, args: FleetArgs) -> Result<()> {
 
     fn print_status(status: &FleetStatusSnapshot) {
         println!(
-            "fleet: runs={} queued={} running={} completed={} failed={} cancelled={} stale={}",
+            "fleet: runs={} queued={} running={} completed={} partial={} failed={} transport_failed={} task_failed={} verifier_failed={} cancelled={} stale={}",
             status.runs,
             status.queued,
             status.running,
             status.completed,
+            status.partial,
             status.failed,
+            status.transport_failed,
+            status.task_failed,
+            status.verifier_failed,
             status.cancelled,
             status.stale
         );
