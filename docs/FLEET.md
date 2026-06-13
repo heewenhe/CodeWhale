@@ -1,7 +1,10 @@
 # Agent Fleet
 
-Agent Fleet is the local-first control plane for durable multi-worker runs. The
-initial CLI surface is:
+Agent Fleet is the local-first control plane for durable multi-worker runs. It
+is **not** a separate execution engine: a fleet worker is a headless
+`codewhale exec` run that the fleet launches and tracks durably. See
+[AGENT_RUNTIME.md](AGENT_RUNTIME.md) for how sub-agents, `exec`, and the fleet
+are one runtime with three launchers. The initial CLI surface is:
 
 ```sh
 codewhale fleet init
