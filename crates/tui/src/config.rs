@@ -156,6 +156,7 @@ pub const DEFAULT_TOGETHER_MODEL: &str = "deepseek-ai/DeepSeek-V4-Pro";
 pub const DEFAULT_TOGETHER_BASE_URL: &str = "https://api.together.xyz/v1";
 pub const DEFAULT_OPENAI_CODEX_MODEL: &str = "gpt-5.5";
 pub const DEFAULT_OPENAI_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api";
+pub const OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS: u32 = 400_000;
 /// Legacy `deepseek-cn` provider alias.
 ///
 /// DeepSeek's official API host is the same worldwide. Keep this alias for
@@ -433,8 +434,7 @@ pub fn provider_capability(provider: ApiProvider, resolved_model: &str) -> Provi
         return ProviderCapability {
             provider,
             resolved_model: resolved_model.to_string(),
-            context_window: crate::models::context_window_for_model(resolved_model)
-                .unwrap_or(crate::models::LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS),
+            context_window: OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS,
             max_output: crate::models::max_output_tokens_for_model(resolved_model).unwrap_or(4096),
             thinking_supported: true,
             cache_telemetry_supported: false,
@@ -11442,7 +11442,10 @@ model = "deepseek-ai/deepseek-v4-pro"
         let cap = provider_capability(ApiProvider::OpenaiCodex, DEFAULT_OPENAI_CODEX_MODEL);
         assert_eq!(cap.provider, ApiProvider::OpenaiCodex);
         assert_eq!(cap.resolved_model, DEFAULT_OPENAI_CODEX_MODEL);
-        assert_eq!(cap.context_window, 1_050_000);
+        assert_eq!(
+            cap.context_window,
+            OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS
+        );
         assert_eq!(cap.max_output, 128_000);
         assert!(cap.thinking_supported);
         assert!(!cap.cache_telemetry_supported);

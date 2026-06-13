@@ -222,6 +222,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CodeWhale aliases now use OpenAI's documented 1,050,000-token context window
   and 128,000 max-output metadata for context pressure, prompts, and doctor
   capability output.
+- **OpenAI Codex effective context budgeting.** The public OpenAI API metadata
+  for `gpt-5.5` remains 1,050,000 tokens, but the `openai-codex` OAuth route now
+  budgets prompts against the 400K Codex-family effective window so preflight
+  compaction runs before the backend returns `context_length_exceeded`.
 - **OpenRouter Nemotron 3 Ultra preset.** The OpenRouter preset and model
   registry now emit `nvidia/nemotron-3-ultra-550b-a55b` while keeping the old
   Ultra aliases compatible.

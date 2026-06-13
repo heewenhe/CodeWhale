@@ -1,6 +1,7 @@
 use super::*;
 
 use super::context::TURN_MAX_OUTPUT_TOKENS;
+use crate::config::ApiProvider;
 use crate::models::SystemBlock;
 use crate::test_support::lock_test_env;
 use crate::tools::plan::{PlanItemArg, PlanSnapshot, StepStatus};
@@ -2103,10 +2104,28 @@ fn context_budget_reserves_output_and_headroom() {
     let _lock = lock_test_env();
     // V4 has a 1M context window — the only family that comfortably hosts
     // a 256K output reservation without saturating the input budget to 0.
-    let budget = context_input_budget("deepseek-v4-pro")
+    let budget = context_input_budget_for_provider(ApiProvider::Deepseek, "deepseek-v4-pro")
         .expect("deepseek-v4-pro should have a known context window");
     let v4_window: usize = 1_000_000;
     let expected = v4_window - (TURN_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
+    assert_eq!(budget, expected);
+}
+
+#[test]
+fn context_budget_uses_conservative_fallback_for_unknown_models() {
+    let _lock = lock_test_env();
+    let budget = context_input_budget_for_provider(ApiProvider::Openai, "auto")
+        .expect("unknown/auto model ids should still get a conservative hard preflight budget");
+    let expected = 128_000usize - effective_max_output_tokens("auto") as usize - 1_024usize;
+    assert_eq!(budget, expected);
+}
+
+#[test]
+fn context_budget_uses_provider_effective_window_for_openai_codex() {
+    let _lock = lock_test_env();
+    let budget = context_input_budget_for_provider(ApiProvider::OpenaiCodex, "gpt-5.5")
+        .expect("OpenAI Codex should use the route-effective context window");
+    let expected = 400_000usize - effective_max_output_tokens("gpt-5.5") as usize - 1_024usize;
     assert_eq!(budget, expected);
 }
 
@@ -2213,7 +2232,8 @@ fn internal_context_budget_tiers_reserved_output_by_window() {
     // Large-context (>=500K) models reserve the full TURN_MAX_OUTPUT_TOKENS
     // headroom so long V4 sessions don't compact prematurely.
     let internal_budget =
-        context_input_budget("deepseek-v4-pro").expect("V4 should have a known context window");
+        context_input_budget_for_provider(ApiProvider::Deepseek, "deepseek-v4-pro")
+            .expect("V4 should have a known context window");
     let v4_window: usize = 1_000_000;
     let expected_internal = v4_window - (TURN_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
     assert_eq!(internal_budget, expected_internal);
@@ -2222,8 +2242,9 @@ fn internal_context_budget_tiers_reserved_output_by_window() {
     // deployment must yield a usable positive budget rather than None. The
     // previous formula reserved the full 262K and computed 256K - 262K - 1K,
     // which underflowed to None and silently disabled preflight/recovery.
-    let small_window_budget = context_input_budget("qwen3-32b-256k")
-        .expect("a 256K-suffix model must yield Some budget via the effective-cap branch");
+    let small_window_budget =
+        context_input_budget_for_provider(ApiProvider::Openai, "qwen3-32b-256k")
+            .expect("a 256K-suffix model must yield Some budget via the effective-cap branch");
     let effective_output = effective_max_output_tokens("qwen3-32b-256k") as usize;
     let expected_small = 256_000 - effective_output - 1_024;
     assert_eq!(small_window_budget, expected_small);

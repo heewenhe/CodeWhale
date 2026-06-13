@@ -205,7 +205,9 @@ impl Engine {
                 continue;
             }
 
-            if let Some(input_budget) = context_input_budget(&self.session.model) {
+            if let Some(input_budget) =
+                context_input_budget_for_provider(self.api_provider, &self.session.model)
+            {
                 let estimated_input = self.estimated_input_tokens();
                 if estimated_input > input_budget {
                     if context_recovery_attempts >= MAX_CONTEXT_RECOVERY_ATTEMPTS {

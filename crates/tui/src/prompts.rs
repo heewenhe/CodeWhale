@@ -34,6 +34,9 @@ pub struct PromptSessionContext<'a> {
     /// preserving backward compatibility with existing call sites
     /// that predate dynamic model injection.
     pub model_id: &'a str,
+    /// Route-effective context window, when known. This can differ from the
+    /// model-family maximum when a provider wrapper exposes a smaller envelope.
+    pub context_window_override: Option<u32>,
     /// Whether the user-visible transcript renders thinking blocks.
     /// When false, the prompt should not spend localization pressure on
     /// `reasoning_content` the user will never see.
@@ -52,6 +55,7 @@ impl Default for PromptSessionContext<'_> {
             locale_tag: "en",
             translation_enabled: false,
             model_id: "codewhale",
+            context_window_override: None,
             show_thinking: true,
             verbosity: None,
         }
@@ -838,12 +842,17 @@ pub(crate) fn render_runtime_policy_reference() -> String {
 /// constant; this function produces a per-session variant so the prompt
 /// says "You are deepseek-v4-pro" or "You are deepseek-v4-flash" instead
 /// of a static placeholder.
-fn apply_model_template(prompt: &str, model_id: &str) -> String {
+fn apply_model_template(
+    prompt: &str,
+    model_id: &str,
+    context_window_override: Option<u32>,
+) -> String {
     let mut prompt = prompt.replace("{model_id}", model_id);
 
     // #3025: Substitute model-specific facts so non-DeepSeek models don't
     // get V4 architecture claims, 1M-window assumptions, or Flash pricing.
-    let ctx_window = crate::models::context_window_for_model(model_id);
+    let ctx_window =
+        context_window_override.or_else(|| crate::models::context_window_for_model(model_id));
     let window_note = if let Some(window) = ctx_window {
         format!(
             "You have a {}-token context window. Do not summarize or delete \
@@ -999,7 +1008,7 @@ fn compose_default_static_layers(_personality: Personality, model_id: &str) -> S
     // Personality is now folded into the YAML constitution (constitution.yaml).
     // No separate overlay is appended — the base prompt already carries voice,
     // tone, and presentation guidance via the preamble and article text.
-    apply_model_template(effective_base_prompt().trim(), model_id)
+    apply_model_template(effective_base_prompt().trim(), model_id, None)
 }
 
 fn apply_static_prompt_composer(
@@ -1069,6 +1078,7 @@ pub fn system_prompt_for_mode_with_context_and_skills(
             locale_tag: "en",
             translation_enabled: false,
             model_id: "codewhale",
+            context_window_override: None,
             show_thinking: true,
             verbosity: None,
         },
@@ -1098,8 +1108,17 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     instructions: Option<&[InstructionSource]>,
     session_context: PromptSessionContext<'_>,
 ) -> SystemPrompt {
-    let mode_prompt =
-        compose_prompt_with_approval_model_and_shell(Personality::Calm, session_context.model_id);
+    let default_layers = apply_model_template(
+        effective_base_prompt().trim(),
+        session_context.model_id,
+        session_context.context_window_override,
+    );
+    let mode_prompt = apply_static_prompt_composer(
+        effective_static_prompt_composer(),
+        Personality::Calm,
+        session_context.model_id,
+        &default_layers,
+    );
 
     // Load project context from workspace
     let project_context = load_project_context_with_parents(workspace);
@@ -1548,7 +1567,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_prompt_for_openai_codex_uses_verified_context_window() {
+    fn compose_prompt_for_openai_api_gpt_55_uses_verified_context_window() {
         let prompt = compose_prompt_with_approval_model_and_shell(Personality::Calm, "gpt-5.5");
         assert!(!prompt.contains("Your V4 Characteristics"));
         assert!(prompt.contains("1050000-token context window"));
@@ -1577,9 +1596,16 @@ mod tests {
 
     #[test]
     fn apply_model_template_replaces_placeholder() {
-        let result = apply_model_template("You are {model_id}", "deepseek-v4-pro");
+        let result = apply_model_template("You are {model_id}", "deepseek-v4-pro", None);
         assert_eq!(result, "You are deepseek-v4-pro");
         assert!(!result.contains("{model_id}"));
+    }
+
+    #[test]
+    fn apply_model_template_uses_context_window_override() {
+        let result = apply_model_template("{context_window_note}", "gpt-5.5", Some(400_000));
+        assert!(result.contains("400000-token context window"));
+        assert!(!result.contains("1050000-token context window"));
     }
 
     #[test]
@@ -1978,6 +2004,7 @@ mod tests {
                 locale_tag: "zh-Hans",
                 translation_enabled: false,
                 model_id: "codewhale",
+                context_window_override: None,
                 show_thinking: true,
                 verbosity: None,
             },
@@ -2048,6 +2075,7 @@ mod tests {
                 locale_tag: "zh-Hans",
                 translation_enabled: false,
                 model_id: "codewhale",
+                context_window_override: None,
                 show_thinking: true,
                 verbosity: None,
             },
@@ -2091,6 +2119,7 @@ mod tests {
                 locale_tag: "zh-Hans",
                 translation_enabled: false,
                 model_id: "codewhale",
+                context_window_override: None,
                 show_thinking: false,
                 verbosity: None,
             },
@@ -2144,6 +2173,7 @@ mod tests {
                 locale_tag: "en",
                 translation_enabled: false,
                 model_id: "codewhale",
+                context_window_override: None,
                 show_thinking: true,
                 verbosity: None,
             },
@@ -2248,6 +2278,7 @@ mod tests {
                 locale_tag: "ja",
                 translation_enabled: false,
                 model_id: "codewhale",
+                context_window_override: None,
                 show_thinking: true,
                 verbosity: None,
             },
@@ -2285,6 +2316,7 @@ mod tests {
                 locale_tag: "en",
                 translation_enabled: false,
                 model_id: "codewhale",
+                context_window_override: None,
                 show_thinking: true,
                 verbosity: None,
             },
@@ -2314,6 +2346,7 @@ mod tests {
                 locale_tag: "en",
                 translation_enabled: false,
                 model_id: "codewhale",
+                context_window_override: None,
                 show_thinking: true,
                 verbosity: None,
             },
@@ -2372,6 +2405,7 @@ mod tests {
                 locale_tag: "en",
                 translation_enabled: false,
                 model_id: "codewhale",
+                context_window_override: None,
                 show_thinking: true,
                 verbosity: None,
             },
@@ -2401,6 +2435,7 @@ mod tests {
                 locale_tag: "en",
                 translation_enabled: false,
                 model_id: "codewhale",
+                context_window_override: None,
                 show_thinking: true,
                 verbosity: None,
             },
@@ -2608,6 +2643,7 @@ mod tests {
                 locale_tag: "en",
                 translation_enabled: false,
                 model_id: "codewhale",
+                context_window_override: None,
                 show_thinking: true,
                 verbosity: None,
             },
@@ -2643,6 +2679,7 @@ mod tests {
                 locale_tag: "en",
                 translation_enabled: false,
                 model_id: "codewhale",
+                context_window_override: None,
                 show_thinking: true,
                 verbosity: None,
             },
@@ -3186,6 +3223,7 @@ mod tests {
                 locale_tag: "en",
                 translation_enabled: false,
                 model_id: "codewhale",
+                context_window_override: None,
                 show_thinking: true,
                 verbosity: Some(" Concise "),
             },

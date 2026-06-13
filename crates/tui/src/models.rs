@@ -246,6 +246,12 @@ pub fn context_window_for_model(model: &str) -> Option<u32> {
         }
         return Some(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS);
     }
+    if is_openai_gpt_55_api_model(&lower) {
+        return Some(1_050_000);
+    }
+    if is_openai_codex_model(&lower) {
+        return Some(400_000);
+    }
     if let Some(window) = known_context_window_for_model(&lower) {
         return Some(window);
     }
@@ -259,7 +265,8 @@ fn known_context_window_for_model(model_lower: &str) -> Option<u32> {
     match model_lower {
         // OpenAI API model docs, verified 2026-06-12:
         // https://developers.openai.com/api/docs/models/gpt-5.5
-        "gpt-5.5" | "gpt-5.5-pro" | "codex-gpt-5.5" | "chatgpt-gpt-5.5" => Some(1_050_000),
+        // Family aliases and snapshots are handled by
+        // `is_openai_gpt_55_api_model` before this table.
         // OpenAI Codex model docs, verified 2026-06-12:
         // https://developers.openai.com/api/docs/models/gpt-5-codex
         // https://developers.openai.com/api/docs/models/gpt-5.3-codex
@@ -320,9 +327,11 @@ pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
     if lower.contains("deepseek") && lower.contains("v4") {
         return Some(384_000);
     }
+    if is_openai_gpt_55_api_model(&lower) || is_openai_codex_model(&lower) {
+        return Some(128_000);
+    }
     match lower.as_str() {
-        "gpt-5.5" | "gpt-5.5-pro" | "codex-gpt-5.5" | "chatgpt-gpt-5.5" | "gpt-5-codex"
-        | "gpt-5.3-codex" => Some(128_000),
+        "gpt-5-codex" | "gpt-5.3-codex" => Some(128_000),
         "claude-opus-4-8" => Some(128_000),
         "claude-sonnet-4-6" | "claude-haiku-4-5" => Some(64_000),
         "arcee-ai/trinity-large-thinking"
@@ -369,10 +378,6 @@ pub fn model_supports_reasoning(model: &str) -> bool {
         lower.as_str(),
         "claude-opus-4-8"
             | "claude-sonnet-4-6"
-            | "gpt-5.5"
-            | "gpt-5.5-pro"
-            | "codex-gpt-5.5"
-            | "chatgpt-gpt-5.5"
             | "gpt-5-codex"
             | "gpt-5.3-codex"
             | "arcee-ai/trinity-large-thinking"
@@ -414,7 +419,46 @@ pub fn model_supports_reasoning(model: &str) -> bool {
             | "z-ai/glm-5.2"
             | "glm-5.1"
             | "glm-5.2"
+    ) || is_openai_gpt_55_api_model(&lower)
+        || is_openai_codex_model(&lower)
+}
+
+fn is_openai_gpt_55_api_model(model_lower: &str) -> bool {
+    matches!(model_lower, "gpt-5.5" | "gpt-5.5-pro")
+        || has_date_snapshot_suffix(model_lower, "gpt-5.5-")
+        || has_date_snapshot_suffix(model_lower, "gpt-5.5-pro-")
+}
+
+fn is_openai_codex_model(model_lower: &str) -> bool {
+    matches!(
+        model_lower,
+        "gpt-5-codex"
+            | "gpt-5.1-codex"
+            | "gpt-5.1-codex-mini"
+            | "gpt-5.1-codex-max"
+            | "gpt-5.2-codex"
+            | "gpt-5.3-codex"
+            | "codex-gpt-5.5"
+            | "chatgpt-gpt-5.5"
+            | "gpt-5.5-codex"
+            | "gpt-5.5-codex-preview"
+            | "codex-gpt-5.5-preview"
+            | "chatgpt-gpt-5.5-preview"
     )
+}
+
+fn has_date_snapshot_suffix(model_lower: &str, prefix: &str) -> bool {
+    let Some(rest) = model_lower.strip_prefix(prefix) else {
+        return false;
+    };
+    let bytes = rest.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(idx, byte)| idx == 4 || idx == 7 || byte.is_ascii_digit())
 }
 
 /// Parse an explicit `_Nk` context-window hint from a model name (vendor
@@ -632,8 +676,13 @@ mod tests {
     }
 
     #[test]
-    fn openai_codex_models_have_verified_context_metadata() {
-        for model in ["gpt-5.5", "codex-gpt-5.5", "chatgpt-gpt-5.5"] {
+    fn openai_api_and_codex_models_have_verified_context_metadata() {
+        for model in [
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "gpt-5.5-2026-04-23",
+            "gpt-5.5-pro-2026-04-23",
+        ] {
             assert_eq!(context_window_for_model(model), Some(1_050_000));
             assert_eq!(max_output_tokens_for_model(model), Some(128_000));
             assert!(model_supports_reasoning(model));
@@ -643,11 +692,30 @@ mod tests {
             );
         }
 
-        for model in ["gpt-5-codex", "gpt-5.3-codex"] {
+        for model in [
+            "gpt-5-codex",
+            "gpt-5.1-codex",
+            "gpt-5.1-codex-mini",
+            "gpt-5.1-codex-max",
+            "gpt-5.2-codex",
+            "gpt-5.3-codex",
+            "codex-gpt-5.5",
+            "chatgpt-gpt-5.5",
+            "gpt-5.5-codex",
+            "gpt-5.5-codex-preview",
+        ] {
             assert_eq!(context_window_for_model(model), Some(400_000));
             assert_eq!(max_output_tokens_for_model(model), Some(128_000));
             assert!(model_supports_reasoning(model));
+            assert_eq!(
+                compaction_threshold_for_model_at_percent(model, 80.0),
+                320_000
+            );
         }
+
+        assert_eq!(context_window_for_model("gpt-5.5-nano"), None);
+        assert_eq!(max_output_tokens_for_model("gpt-5.5-nano"), None);
+        assert!(!model_supports_reasoning("gpt-5.5-nano"));
     }
 
     #[test]

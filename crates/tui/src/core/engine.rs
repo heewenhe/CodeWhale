@@ -518,6 +518,7 @@ pub struct Engine {
     subagent_manager: SharedSubAgentManager,
     shell_manager: SharedShellManager,
     mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+    api_provider: ApiProvider,
     rx_op: mpsc::Receiver<Op>,
     rx_approval: mpsc::Receiver<ApprovalDecision>,
     rx_user_input: mpsc::Receiver<UserInputDecision>,
@@ -688,6 +689,7 @@ impl Engine {
             Ok(client) => (Some(client), None),
             Err(err) => (None, Some(err.to_string())),
         };
+        let api_provider = api_config.api_provider();
         let api_key_env_only_recovery = Self::env_only_api_key_recovery_hint(api_config);
 
         let mut session = Session::new(
@@ -718,6 +720,10 @@ impl Engine {
                     locale_tag: &config.locale_tag,
                     translation_enabled: config.translation_enabled,
                     model_id: &config.model,
+                    context_window_override: Some(
+                        crate::config::provider_capability(api_provider, &config.model)
+                            .context_window,
+                    ),
                     show_thinking: config.show_thinking,
                     verbosity: config.verbosity.as_deref(),
                 },
@@ -821,6 +827,7 @@ impl Engine {
             subagent_manager,
             shell_manager,
             mcp_pool: None,
+            api_provider,
             rx_op,
             rx_approval,
             rx_user_input,
@@ -2159,7 +2166,9 @@ impl Engine {
     }
 
     async fn recover_context_overflow(&mut self, client: &DeepSeekClient, reason: &str) -> bool {
-        let Some(target_budget) = context_input_budget(&self.session.model) else {
+        let Some(target_budget) =
+            context_input_budget_for_provider(self.api_provider, &self.session.model)
+        else {
             return false;
         };
 
@@ -2500,6 +2509,10 @@ impl Engine {
                 locale_tag: &self.config.locale_tag,
                 translation_enabled: self.config.translation_enabled,
                 model_id: &self.config.model,
+                context_window_override: Some(
+                    crate::config::provider_capability(self.api_provider, &self.config.model)
+                        .context_window,
+                ),
                 show_thinking: self.config.show_thinking,
                 verbosity: self.config.verbosity.as_deref(),
             },
@@ -2828,8 +2841,8 @@ mod handle;
 pub(crate) use context::compact_tool_result_for_context;
 use context::{
     COMPACTION_SUMMARY_MARKER, MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
-    context_input_budget, effective_max_output_tokens, extract_compaction_summary_prompt,
-    is_context_length_error_message, summarize_text,
+    context_input_budget_for_provider, effective_max_output_tokens,
+    extract_compaction_summary_prompt, is_context_length_error_message, summarize_text,
 };
 mod dispatch;
 mod loop_guard;

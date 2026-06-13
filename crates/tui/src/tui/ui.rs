@@ -43,7 +43,7 @@ use crate::commands;
 use crate::compaction::estimate_input_tokens_conservative;
 use crate::config::{
     ApiProvider, Config, DEFAULT_NVIDIA_NIM_BASE_URL, ProviderConfig, ProvidersConfig, StatusItem,
-    UpdateConfig, save_provider_auth_mode_for,
+    UpdateConfig, provider_capability, save_provider_auth_mode_for,
 };
 use crate::config_ui::{self, ConfigUiMode, WebConfigSession, WebConfigSessionEvent};
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
@@ -52,9 +52,7 @@ use crate::core::ops::{Op, USER_SHELL_TOOL_ID_PREFIX};
 use crate::hooks::{HookEvent, HookExecutor, TurnEndPayloadInput, TurnEndTotals};
 use crate::llm_client::LlmClient;
 use crate::localization::{MessageId, tr};
-use crate::models::{
-    ContentBlock, Message, MessageRequest, SystemPrompt, Usage, context_window_for_model,
-};
+use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
 use crate::palette;
 use crate::prompts;
 use crate::session_manager::{
@@ -5659,6 +5657,9 @@ async fn dispatch_user_message(
                 locale_tag: app.ui_locale.tag(),
                 translation_enabled: app.translation_enabled,
                 model_id: &app.model,
+                context_window_override: Some(
+                    provider_capability(app.api_provider, &app.model).context_window,
+                ),
                 show_thinking: app.show_thinking,
                 verbosity: app.verbosity.as_deref(),
             },
@@ -9425,7 +9426,8 @@ fn estimated_context_tokens(app: &App) -> Option<i64> {
 }
 
 pub(crate) fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
-    let max = context_window_for_model(app.effective_model_for_budget())?;
+    let max =
+        provider_capability(app.api_provider, app.effective_model_for_budget()).context_window;
     let max_i64 = i64::from(max);
     let reported = app
         .session
