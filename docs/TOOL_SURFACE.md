@@ -128,6 +128,12 @@ confirmation prompt, `/relay`, and fork-state handoff all render the same
 artifact so a plan can be reviewed, accepted, revised, replayed, or delegated
 without losing its source context.
 
+Strategy metadata and checklist work are one Work surface. Treat
+`update_plan` as phase context and sequencing intent, while `checklist_*`
+remains the counted task ledger. When both exist, UI projections should group
+strategy around the checklist instead of showing two peer checklist/progress
+systems for the same run.
+
 ### Verification gates and artifacts
 
 | Tool | Niche |

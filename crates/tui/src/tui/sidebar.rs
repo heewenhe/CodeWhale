@@ -185,6 +185,10 @@ pub(crate) struct SidebarWorkSummary {
 }
 
 impl SidebarWorkSummary {
+    fn checklist_is_primary(&self) -> bool {
+        !self.checklist_items.is_empty()
+    }
+
     fn has_strategy(&self) -> bool {
         self.strategy_explanation
             .as_deref()
@@ -450,7 +454,7 @@ fn work_panel_hover_texts(
     }
 
     if summary.has_strategy() && texts.len() < max_rows {
-        if summary.checklist_items.is_empty() && !summary.strategy_steps.is_empty() {
+        if !summary.checklist_is_primary() && !summary.strategy_steps.is_empty() {
             let (pending, in_progress, completed) = summary.strategy_counts();
             let total = pending + in_progress + completed;
             texts.push(format!(
@@ -458,7 +462,7 @@ fn work_panel_hover_texts(
                 summary.strategy_progress_percent()
             ));
         } else {
-            texts.push("Strategy metadata".to_string());
+            texts.push(work_strategy_context_label(summary).to_string());
         }
 
         if let Some(explanation) = summary.strategy_explanation.as_deref()
@@ -476,7 +480,15 @@ fn work_panel_hover_texts(
                 StepStatus::InProgress => "[~]",
                 StepStatus::Completed => "[✓]",
             };
-            let mut text = format!("{prefix} {}", step.text);
+            let mut text = if summary.checklist_is_primary() {
+                format!(
+                    "{} {}",
+                    strategy_context_step_prefix(&step.status),
+                    step.text
+                )
+            } else {
+                format!("{prefix} {}", step.text)
+            };
             if !step.elapsed.is_empty() {
                 let _ = write!(text, " ({})", step.elapsed);
             }
@@ -670,7 +682,8 @@ fn push_work_strategy_lines(
         return;
     }
 
-    if summary.checklist_items.is_empty() && !summary.strategy_steps.is_empty() {
+    let checklist_is_primary = summary.checklist_is_primary();
+    if !checklist_is_primary && !summary.strategy_steps.is_empty() {
         let (pending, in_progress, completed) = summary.strategy_counts();
         let total = pending + in_progress + completed;
         lines.push(Line::from(vec![
@@ -689,7 +702,7 @@ fn push_work_strategy_lines(
         ]));
     } else {
         lines.push(Line::from(Span::styled(
-            "Strategy metadata",
+            work_strategy_context_label(summary),
             Style::default().fg(theme.plan_summary_color).bold(),
         )));
     }
@@ -712,7 +725,15 @@ fn push_work_strategy_lines(
             StepStatus::InProgress => ("[~]", theme.plan_in_progress_color),
             StepStatus::Completed => ("[✓]", theme.plan_completed_color),
         };
-        let mut text = format!("{prefix} {}", step.text);
+        let (text_prefix, color) = if checklist_is_primary {
+            (
+                strategy_context_step_prefix(&step.status),
+                strategy_context_step_color(&step.status, theme),
+            )
+        } else {
+            (prefix, color)
+        };
+        let mut text = format!("{text_prefix} {}", step.text);
         if !step.elapsed.is_empty() {
             let _ = write!(text, " ({})", step.elapsed);
         }
@@ -728,6 +749,30 @@ fn push_work_strategy_lines(
             format!("+{remaining} more strategy steps"),
             Style::default().fg(theme.plan_summary_color),
         )));
+    }
+}
+
+fn work_strategy_context_label(summary: &SidebarWorkSummary) -> &'static str {
+    if summary.checklist_is_primary() {
+        "Strategy context"
+    } else {
+        "Strategy metadata"
+    }
+}
+
+fn strategy_context_step_prefix(status: &StepStatus) -> &'static str {
+    match status {
+        StepStatus::Pending => "phase next:",
+        StepStatus::InProgress => "phase now:",
+        StepStatus::Completed => "phase done:",
+    }
+}
+
+fn strategy_context_step_color(status: &StepStatus, theme: &Theme) -> ratatui::style::Color {
+    match status {
+        StepStatus::Pending => theme.plan_pending_color,
+        StepStatus::InProgress => theme.plan_in_progress_color,
+        StepStatus::Completed => theme.plan_summary_color,
     }
 }
 
@@ -2807,6 +2852,78 @@ mod tests {
         assert!(
             !text.iter().any(|line| line.contains("50% complete")),
             "strategy progress must not render as a second progress bar when checklist exists: {text:?}"
+        );
+        assert!(
+            text.iter().any(|line| line == "Strategy context"),
+            "strategy should be grouped as context for the checklist: {text:?}"
+        );
+        assert!(
+            text.iter()
+                .any(|line| line.contains("phase done: Simplify sidebar")),
+            "completed strategy steps should render as phase context: {text:?}"
+        );
+        assert!(
+            text.iter()
+                .any(|line| line.contains("phase next: Update prompts")),
+            "pending strategy steps should render as phase context: {text:?}"
+        );
+        assert!(
+            !text
+                .iter()
+                .any(|line| line.contains("[✓] Simplify sidebar"))
+                && !text.iter().any(|line| line.contains("[ ] Update prompts")),
+            "strategy rows must not look like a second checklist when Work checklist exists: {text:?}"
+        );
+    }
+
+    #[test]
+    fn work_panel_hover_renders_strategy_as_context_when_checklist_exists() {
+        let summary = SidebarWorkSummary {
+            checklist_completion_pct: 0,
+            checklist_items: vec![SidebarWorkChecklistItem {
+                id: 1,
+                content: "Wire tool execution".to_string(),
+                status: TodoStatus::InProgress,
+            }],
+            strategy_explanation: Some("Keep strategy and checklist linked".to_string()),
+            strategy_steps: vec![
+                SidebarWorkStrategyStep {
+                    text: "Map phase boundaries".to_string(),
+                    status: StepStatus::Completed,
+                    elapsed: String::new(),
+                },
+                SidebarWorkStrategyStep {
+                    text: "Implement counted work".to_string(),
+                    status: StepStatus::InProgress,
+                    elapsed: String::new(),
+                },
+            ],
+            ..SidebarWorkSummary::default()
+        };
+
+        let hover = work_panel_hover_texts(&summary, 80, 16);
+
+        assert!(
+            hover.iter().any(|line| line == "Strategy context"),
+            "hover should name strategy as context when checklist exists: {hover:?}"
+        );
+        assert!(
+            hover
+                .iter()
+                .any(|line| line.contains("phase done: Map phase boundaries")),
+            "hover strategy rows should be phase context: {hover:?}"
+        );
+        assert!(
+            hover
+                .iter()
+                .any(|line| line.contains("phase now: Implement counted work")),
+            "hover should expose the active strategy phase without checklist markers: {hover:?}"
+        );
+        assert!(
+            !hover
+                .iter()
+                .any(|line| line.contains("[✓] Map phase boundaries")),
+            "hover strategy rows must not look like a second checklist: {hover:?}"
         );
     }
 
