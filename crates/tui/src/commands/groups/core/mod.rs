@@ -36,6 +36,7 @@ impl CommandGroup for CoreCommands {
             Box::new(FunctionCommand::new(&HOOKS_INFO, run_hooks)),
             Box::new(FunctionCommand::new(&SUBAGENTS_INFO, run_subagents)),
             Box::new(FunctionCommand::new(&AGENT_INFO, run_agent)),
+            Box::new(FunctionCommand::new(&SWARM_INFO, run_swarm)),
             Box::new(FunctionCommand::new(&LINKS_INFO, run_links)),
             Box::new(FunctionCommand::new(&FEEDBACK_INFO, run_feedback)),
             Box::new(FunctionCommand::new(&HF_INFO, run_hf)),
@@ -122,6 +123,12 @@ static AGENT_INFO: CommandInfo = CommandInfo {
     aliases: &["daili"],
     usage: "/agent [N] <task>",
     description_id: MessageId::CmdAgentDescription,
+};
+static SWARM_INFO: CommandInfo = CommandInfo {
+    name: "swarm",
+    aliases: &["fanout", "qun"],
+    usage: "/swarm [N] <task>",
+    description_id: MessageId::CmdSwarmDescription,
 };
 static LINKS_INFO: CommandInfo = CommandInfo {
     name: "links",
@@ -230,6 +237,9 @@ fn run_subagents(app: &mut App, arg: Option<&str>) -> CommandResult {
 fn run_agent(app: &mut App, arg: Option<&str>) -> CommandResult {
     run_registered(app, "agent", arg)
 }
+fn run_swarm(app: &mut App, arg: Option<&str>) -> CommandResult {
+    run_registered(app, "swarm", arg)
+}
 fn run_links(app: &mut App, arg: Option<&str>) -> CommandResult {
     run_registered(app, "links", arg)
 }
@@ -282,6 +292,7 @@ pub(in crate::commands) fn dispatch(
         "hooks" | "hook" | "gouzi" => hooks::hooks(app, arg),
         "subagents" | "agents" | "zhinengti" => core::subagents(app),
         "agent" | "daili" => agent(app, arg),
+        "swarm" | "fanout" | "qun" => swarm(app, arg),
         "links" | "dashboard" | "api" | "lianjie" => core::deepseek_links(app),
         "feedback" => feedback::feedback(app, arg),
         "hf" | "huggingface" => hf::hf(app, arg),
@@ -357,6 +368,35 @@ pub fn agent(_app: &mut App, arg: Option<&str>) -> CommandResult {
     );
     CommandResult::with_message_and_action(
         format!("Opening persistent sub-agent at depth {max_depth}..."),
+        AppAction::SendMessage(message),
+    )
+}
+
+/// Run a WhaleFlow-backed multi-agent swarm: high-fanout headless sub-agents
+/// over one task. This is an overlay on the current mode (Agent/Plan/YOLO), not
+/// a fourth mode — it instructs the model to decompose and fan out, collecting
+/// compact result summaries rather than child transcripts (#3178).
+pub fn swarm(_app: &mut App, arg: Option<&str>) -> CommandResult {
+    let (max_depth, task) = match parse_depth_prefixed_arg(arg, 1) {
+        Ok(parsed) => parsed,
+        Err(message) => return CommandResult::error(message),
+    };
+    let task = match task {
+        Some(task) if !task.trim().is_empty() => task.trim().to_string(),
+        _ => {
+            return CommandResult::error(
+                "Usage: /swarm [N] <task>\n\n\
+                 Runs a multi-agent swarm: decomposes the task and fans out \
+                 headless sub-agents (recursive depth N, 0-3, default 1), then \
+                 synthesizes their results.",
+            );
+        }
+    };
+    let message = format!(
+        "Run a multi-agent swarm for this task: {task:?}. Decompose it into independent, parallelizable subtasks and open one headless sub-agent per subtask with `agent_open` (pass `max_depth: {max_depth}` for nested delegation, and an `agent_type`/role that fits each subtask — explore for research, review for verification, implementer for edits). Run them concurrently; collect each worker's result summary with `agent_eval` (summaries, not full transcripts) and synthesize a single answer. Keep the fanout proportional to the task, and verify any claimed side effects before reporting success."
+    );
+    CommandResult::with_message_and_action(
+        format!("Dispatching a swarm at depth {max_depth}..."),
         AppAction::SendMessage(message),
     )
 }
