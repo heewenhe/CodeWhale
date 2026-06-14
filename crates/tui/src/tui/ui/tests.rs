@@ -3866,6 +3866,86 @@ fn reconcile_subagent_activity_state_trims_stale_progress_and_sets_anchor() {
 }
 
 #[test]
+fn reconcile_subagent_activity_state_expires_terminal_cards_but_keeps_running() {
+    let mut app = create_test_app();
+    let now = Instant::now();
+    app.subagent_cache = vec![
+        make_subagent(
+            "agent_running",
+            crate::tools::subagent::SubAgentStatus::Running,
+        ),
+        make_subagent(
+            "agent_old",
+            crate::tools::subagent::SubAgentStatus::Completed,
+        ),
+        make_subagent(
+            "agent_recent",
+            crate::tools::subagent::SubAgentStatus::Failed("boom".to_string()),
+        ),
+    ];
+    app.subagent_terminal_seen_at.insert(
+        "agent_old".to_string(),
+        now.checked_sub(Duration::from_secs(10 * 60)).unwrap(),
+    );
+    app.subagent_terminal_seen_at.insert(
+        "agent_recent".to_string(),
+        now.checked_sub(Duration::from_secs(30)).unwrap(),
+    );
+
+    reconcile_subagent_activity_state_at(&mut app, now);
+
+    let ids: HashSet<&str> = app
+        .subagent_cache
+        .iter()
+        .map(|agent| agent.agent_id.as_str())
+        .collect();
+    assert!(ids.contains("agent_running"));
+    assert!(ids.contains("agent_recent"));
+    assert!(!ids.contains("agent_old"));
+    assert!(!app.subagent_terminal_seen_at.contains_key("agent_old"));
+    assert!(app.subagent_terminal_seen_at.contains_key("agent_recent"));
+}
+
+#[test]
+fn reconcile_subagent_activity_state_caps_terminal_card_bursts() {
+    let mut app = create_test_app();
+    let now = Instant::now();
+    for idx in 0..30 {
+        let id = format!("agent_{idx:02}");
+        app.subagent_cache.push(make_subagent(
+            &id,
+            crate::tools::subagent::SubAgentStatus::Completed,
+        ));
+        app.subagent_terminal_seen_at
+            .insert(id, now.checked_sub(Duration::from_secs(idx)).unwrap());
+    }
+
+    reconcile_subagent_activity_state_at(&mut app, now);
+
+    let terminal_count = app
+        .subagent_cache
+        .iter()
+        .filter(|agent| {
+            !matches!(
+                agent.status,
+                crate::tools::subagent::SubAgentStatus::Running
+            )
+        })
+        .count();
+    assert_eq!(terminal_count, 24);
+    assert!(
+        app.subagent_cache
+            .iter()
+            .any(|agent| agent.agent_id == "agent_00")
+    );
+    assert!(
+        !app.subagent_cache
+            .iter()
+            .any(|agent| agent.agent_id == "agent_29")
+    );
+}
+
+#[test]
 fn subagent_token_usage_updates_live_cost_counter_without_card_change() {
     let mut app = create_test_app();
     handle_subagent_mailbox(

@@ -97,6 +97,8 @@ use crate::tui::shell_job_routing::{
     add_shell_job_message, format_shell_job_list, format_shell_poll, open_shell_job_pager,
 };
 use crate::tui::streaming_thinking;
+#[cfg(test)]
+use crate::tui::subagent_routing::reconcile_subagent_activity_state_at;
 use crate::tui::subagent_routing::{
     format_task_list, handle_subagent_mailbox, open_task_pager, reconcile_subagent_activity_state,
     running_agent_count, sort_subagents_in_place, subagent_message_refreshes_workspace_context,

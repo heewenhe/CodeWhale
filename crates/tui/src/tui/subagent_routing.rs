@@ -1,6 +1,6 @@
 //! Sub-agent and background-task routing helpers for the TUI loop.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::task_manager::{TaskRecord, TaskStatus, TaskSummary};
 use crate::tools::subagent::{MailboxMessage, SubAgentResult, SubAgentStatus};
@@ -12,6 +12,9 @@ use crate::tui::widgets::agent_card::{
     AgentLifecycle, DelegateCard, FanoutCard, apply_to_delegate, apply_to_fanout,
 };
 use crate::tui::workspace_context;
+
+const SUBAGENT_TERMINAL_CARD_TTL: Duration = Duration::from_secs(5 * 60);
+const SUBAGENT_TERMINAL_CARD_MAX_RETAINED: usize = 24;
 
 pub(super) fn running_agent_count(app: &App) -> usize {
     let mut ids: std::collections::HashSet<&str> =
@@ -44,6 +47,13 @@ pub(super) fn active_fanout_counts(app: &App) -> Option<(usize, usize)> {
 }
 
 pub(super) fn reconcile_subagent_activity_state(app: &mut App) {
+    reconcile_subagent_activity_state_at(app, Instant::now());
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn reconcile_subagent_activity_state_at(app: &mut App, now: Instant) {
+    reconcile_terminal_subagent_card_retention(app, now);
+
     let running_agents: Vec<(String, String)> = app
         .subagent_cache
         .iter()
@@ -71,6 +81,65 @@ pub(super) fn reconcile_subagent_activity_state(app: &mut App) {
     }
 
     reconcile_cards_with_snapshots(app);
+}
+
+fn reconcile_terminal_subagent_card_retention(app: &mut App, now: Instant) {
+    let current_ids: std::collections::HashSet<String> = app
+        .subagent_cache
+        .iter()
+        .map(|agent| agent.agent_id.clone())
+        .collect();
+    app.subagent_terminal_seen_at
+        .retain(|id, _| current_ids.contains(id));
+
+    for agent in &app.subagent_cache {
+        if matches!(agent.status, SubAgentStatus::Running) {
+            app.subagent_terminal_seen_at.remove(&agent.agent_id);
+        } else {
+            app.subagent_terminal_seen_at
+                .entry(agent.agent_id.clone())
+                .or_insert(now);
+        }
+    }
+
+    app.subagent_cache.retain(|agent| {
+        if matches!(agent.status, SubAgentStatus::Running) {
+            return true;
+        }
+        app.subagent_terminal_seen_at
+            .get(&agent.agent_id)
+            .and_then(|seen_at| now.checked_duration_since(*seen_at))
+            .is_none_or(|age| age <= SUBAGENT_TERMINAL_CARD_TTL)
+    });
+
+    let mut terminal_seen: Vec<(String, Instant)> = app
+        .subagent_cache
+        .iter()
+        .filter(|agent| !matches!(agent.status, SubAgentStatus::Running))
+        .filter_map(|agent| {
+            app.subagent_terminal_seen_at
+                .get(&agent.agent_id)
+                .map(|seen_at| (agent.agent_id.clone(), *seen_at))
+        })
+        .collect();
+    terminal_seen.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let keep_terminal_ids: std::collections::HashSet<String> = terminal_seen
+        .into_iter()
+        .take(SUBAGENT_TERMINAL_CARD_MAX_RETAINED)
+        .map(|(id, _)| id)
+        .collect();
+    app.subagent_cache.retain(|agent| {
+        matches!(agent.status, SubAgentStatus::Running)
+            || keep_terminal_ids.contains(agent.agent_id.as_str())
+    });
+
+    let kept_ids: std::collections::HashSet<String> = app
+        .subagent_cache
+        .iter()
+        .map(|agent| agent.agent_id.clone())
+        .collect();
+    app.subagent_terminal_seen_at
+        .retain(|id, _| kept_ids.contains(id));
 }
 
 /// Sync in-transcript card slots that still render as running against the

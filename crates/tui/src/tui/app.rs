@@ -1541,6 +1541,8 @@ pub struct App {
     pub stream_chunk_timeout_secs: u64,
     /// Cached sub-agent snapshots for UI views.
     pub subagent_cache: Vec<SubAgentResult>,
+    /// First time this TUI observed each terminal sub-agent card.
+    pub subagent_terminal_seen_at: HashMap<String, Instant>,
     /// Last known per-agent progress text for running sub-agents.
     pub agent_progress: HashMap<String, String>,
     /// In-transcript sub-agent card index by `agent_id` (issue #128).
@@ -2316,6 +2318,7 @@ impl App {
             max_subagents,
             stream_chunk_timeout_secs: config.stream_chunk_timeout_secs(),
             subagent_cache: Vec::new(),
+            subagent_terminal_seen_at: HashMap::new(),
             agent_progress: HashMap::new(),
             subagent_card_index: HashMap::new(),
             last_fanout_card_index: None,
