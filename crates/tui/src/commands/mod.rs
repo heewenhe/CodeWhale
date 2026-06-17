@@ -144,7 +144,6 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         .filter(|value| !value.is_empty());
 
     // Check user-defined commands FIRST so they can override built-ins.
-    user_registry::ensure_initialized(Some(&app.workspace));
     if let Some(result) = user_registry::try_dispatch(app, trimmed) {
         return result;
     }

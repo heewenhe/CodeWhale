@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
+use std::time::{Duration, SystemTime};
 
 use crate::tui::app::{App, AppAction, HuntVerdict};
 
@@ -19,7 +20,22 @@ static USER_COMMAND_REGISTRY: OnceLock<RwLock<UserCommandRegistryState>> = OnceL
 struct UserCommandRegistryState {
     initialized: bool,
     workspace: Option<PathBuf>,
+    command_dirs_snapshot: Vec<CommandDirSnapshot>,
     registry: UserCommandRegistry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommandDirSnapshot {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    files: Vec<CommandFileSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommandFileSnapshot {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    len: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +116,11 @@ impl UserCommandRegistry {
     }
 
     fn load_from_entries(&mut self, commands: Vec<(String, String, PathBuf)>) {
+        let canonical_names = commands
+            .iter()
+            .map(|(name, _, _)| normalize_name(name))
+            .collect::<HashSet<_>>();
+
         for (name, content, path) in commands {
             let (metadata, errors) = parse_metadata(name, &content, &path);
             for error in errors {
@@ -122,6 +143,16 @@ impl UserCommandRegistry {
 
             for alias in &metadata.aliases {
                 let alias = alias.to_ascii_lowercase();
+                if canonical_names.contains(&alias) {
+                    self.record_load_error(
+                        path.clone(),
+                        format!(
+                            "User command alias '/{alias}' for '/{}' duplicates canonical user command '/{alias}'; ignoring this alias",
+                            metadata.name
+                        ),
+                    );
+                    continue;
+                }
                 if let Some(existing) = self.aliases.get(&alias) {
                     self.record_load_error(
                         path.clone(),
@@ -265,7 +296,12 @@ fn validate_command_content(canonical: &str, content: &str, path: &Path) -> Vec<
             saw_closing = true;
             break;
         }
-        if trimmed.is_empty() || line.contains(':') {
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((key, _)) = line.split_once(':')
+            && !key.trim().is_empty()
+        {
             continue;
         }
         errors.push(LoadError {
@@ -301,34 +337,72 @@ fn normalize_workspace(workspace: Option<&Path>) -> Option<PathBuf> {
     workspace.map(Path::to_path_buf)
 }
 
+fn command_dirs_snapshot(workspace: Option<&Path>) -> Vec<CommandDirSnapshot> {
+    user_commands::commands_dirs(workspace)
+        .into_iter()
+        .map(|path| {
+            let modified = std::fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .ok();
+            let mut files = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&path) {
+                for entry in entries.flatten() {
+                    let file_path = entry.path();
+                    if file_path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+                        continue;
+                    }
+                    let Ok(metadata) = entry.metadata() else {
+                        continue;
+                    };
+                    files.push(CommandFileSnapshot {
+                        path: file_path,
+                        modified: metadata.modified().ok(),
+                        len: metadata.len(),
+                    });
+                }
+            }
+            files.sort_by(|a, b| a.path.cmp(&b.path));
+            CommandDirSnapshot {
+                path,
+                modified,
+                files,
+            }
+        })
+        .collect()
+}
+
 fn registry_lock() -> &'static RwLock<UserCommandRegistryState> {
     USER_COMMAND_REGISTRY.get_or_init(|| RwLock::new(UserCommandRegistryState::default()))
 }
 
-pub fn ensure_initialized(workspace: Option<&Path>) {
-    let workspace = normalize_workspace(workspace);
-    let lock = registry_lock();
-    let should_reload = {
-        let guard = lock.read().expect("user command registry lock poisoned");
-        !guard.initialized || guard.workspace != workspace
-    };
-
-    if should_reload {
-        reload(workspace.as_deref());
-    }
+fn registry_needs_reload(
+    guard: &UserCommandRegistryState,
+    workspace: &Option<PathBuf>,
+    snapshot: &[CommandDirSnapshot],
+) -> bool {
+    !guard.initialized || guard.workspace != *workspace || guard.command_dirs_snapshot != snapshot
 }
 
+#[cfg(test)]
 pub fn reload(workspace: Option<&Path>) {
     let workspace = normalize_workspace(workspace);
+    let snapshot = command_dirs_snapshot(workspace.as_deref());
+    reload_with_snapshot(workspace, snapshot);
+}
+
+#[cfg(test)]
+fn reload_with_snapshot(workspace: Option<PathBuf>, snapshot: Vec<CommandDirSnapshot>) {
     let replacement = UserCommandRegistry::load(workspace.as_deref());
     let mut guard = registry_lock()
         .write()
         .expect("user command registry lock poisoned");
     guard.initialized = true;
     guard.workspace = workspace;
+    guard.command_dirs_snapshot = snapshot;
     guard.registry = replacement;
 }
 
+#[cfg(test)]
 pub fn current_registry() -> UserCommandRegistry {
     registry_lock()
         .read()
@@ -337,9 +411,34 @@ pub fn current_registry() -> UserCommandRegistry {
         .clone()
 }
 
+#[cfg(test)]
 pub fn registry_for_workspace(workspace: Option<&Path>) -> UserCommandRegistry {
-    ensure_initialized(workspace);
-    current_registry()
+    with_registry_for_workspace(workspace, Clone::clone)
+}
+
+pub fn with_registry_for_workspace<R>(
+    workspace: Option<&Path>,
+    f: impl FnOnce(&UserCommandRegistry) -> R,
+) -> R {
+    let workspace = normalize_workspace(workspace);
+    let snapshot = command_dirs_snapshot(workspace.as_deref());
+    let lock = registry_lock();
+    {
+        let guard = lock.read().expect("user command registry lock poisoned");
+        if !registry_needs_reload(&guard, &workspace, &snapshot) {
+            return f(&guard.registry);
+        }
+    }
+
+    let replacement = UserCommandRegistry::load(workspace.as_deref());
+    let mut guard = lock.write().expect("user command registry lock poisoned");
+    if registry_needs_reload(&guard, &workspace, &snapshot) {
+        guard.initialized = true;
+        guard.workspace = workspace;
+        guard.command_dirs_snapshot = snapshot;
+        guard.registry = replacement;
+    }
+    f(&guard.registry)
 }
 
 pub fn try_dispatch(app: &mut App, input: &str) -> Option<CommandResult> {
@@ -347,12 +446,18 @@ pub fn try_dispatch(app: &mut App, input: &str) -> Option<CommandResult> {
     let command = normalize_name(parts.first().copied().unwrap_or_default());
     let args = parts.get(1).copied().unwrap_or("").trim();
 
-    let registry = registry_for_workspace(Some(&app.workspace));
-    if let Some(error) = registry.dispatch_error(&command) {
+    let (dispatch_error, metadata) =
+        with_registry_for_workspace(Some(&app.workspace), |registry| {
+            (
+                registry.dispatch_error(&command),
+                registry.get(&command).cloned(),
+            )
+        });
+    if let Some(error) = dispatch_error {
         return Some(CommandResult::error(error));
     }
 
-    let metadata = registry.get(&command).cloned()?;
+    let metadata = metadata?;
 
     app.hunt.quarry = None;
     app.hunt.started_at = None;
@@ -365,14 +470,29 @@ pub fn try_dispatch(app: &mut App, input: &str) -> Option<CommandResult> {
     app.pausable = false;
     app.paused = false;
     app.paused_quarry = None;
-    if let Ok(mut todos) = app.todos.try_lock() {
-        todos.clear();
-    } else {
+    let mut todos_cleared = false;
+    for _ in 0..10 {
+        if let Ok(mut todos) = app.todos.try_lock() {
+            todos.clear();
+            todos_cleared = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    if !todos_cleared {
         tracing::warn!(target: "commands", "todos lock contended or poisoned — previous todos not cleared");
     }
-    if let Ok(mut plan) = app.plan_state.try_lock() {
-        *plan = crate::tools::plan::PlanState::default();
-    } else {
+
+    let mut plan_cleared = false;
+    for _ in 0..10 {
+        if let Ok(mut plan) = app.plan_state.try_lock() {
+            *plan = crate::tools::plan::PlanState::default();
+            plan_cleared = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    if !plan_cleared {
         tracing::warn!(target: "commands", "plan_state lock contended or poisoned — previous plan not cleared");
     }
 
@@ -644,6 +764,31 @@ mod tests {
     }
 
     #[test]
+    fn alias_conflicting_with_canonical_user_command_is_rejected_consistently() {
+        let registry = UserCommandRegistry::from_loaded(vec![
+            (
+                "alpha".to_string(),
+                "---\nalias: beta\n---\nalpha body".to_string(),
+            ),
+            ("beta".to_string(), "beta body".to_string()),
+        ]);
+
+        let command = registry.get("beta").expect("canonical command resolves");
+        assert_eq!(command.name, "beta");
+        assert_eq!(command.body, "beta body");
+        assert!(
+            registry.load_errors().iter().any(|error| error
+                .message
+                .contains("User command alias '/beta'")
+                && error
+                    .message
+                    .contains("duplicates canonical user command '/beta'")),
+            "alias/canonical conflict should be recorded: {:?}",
+            registry.load_errors()
+        );
+    }
+
+    #[test]
     fn duplicate_user_command_name_records_user_command_error() {
         let registry = UserCommandRegistry::from_loaded(vec![
             ("review".to_string(), "first".to_string()),
@@ -678,6 +823,46 @@ mod tests {
         let message = result.message.expect("error message");
         assert!(message.contains("User command '/help'"), "{message}");
         assert!(message.contains("invalid frontmatter"), "{message}");
+    }
+
+    #[test]
+    fn frontmatter_line_with_empty_key_is_invalid() {
+        let registry = UserCommandRegistry::from_loaded(vec![(
+            "bad".to_string(),
+            "---\n: value\n---\nbody".to_string(),
+        )]);
+
+        assert!(
+            registry.load_errors().iter().any(|error| error
+                .message
+                .contains("invalid frontmatter line \": value\"")),
+            "empty frontmatter key should be invalid: {:?}",
+            registry.load_errors()
+        );
+    }
+
+    #[test]
+    fn registry_reloads_when_existing_command_file_changes() {
+        let tmp = TempDir::new().unwrap();
+        write_workspace_command(tmp.path(), "live", "first");
+
+        assert_eq!(
+            registry_for_workspace(Some(tmp.path()))
+                .get("live")
+                .unwrap()
+                .body,
+            "first"
+        );
+
+        write_workspace_command(tmp.path(), "live", "second body with different length");
+
+        assert_eq!(
+            registry_for_workspace(Some(tmp.path()))
+                .get("live")
+                .unwrap()
+                .body,
+            "second body with different length"
+        );
     }
 
     #[test]

@@ -2319,137 +2319,131 @@ pub(crate) fn slash_completion_hints(
         return Vec::new();
     }
     let mut entries: Vec<SlashMenuEntry> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let prefix_lower = prefix.to_ascii_lowercase();
-    let all_user_commands: Vec<commands::user_registry::UserCommandMetadata> =
-        if completing_skill_arg.is_none() {
-            commands::user_registry::registry_for_workspace(workspace)
-                .iter()
-                .cloned()
-                .collect()
-        } else {
-            Vec::new()
-        };
-    let user_commands: Vec<_> = all_user_commands
-        .iter()
-        .filter(|cmd| !cmd.hidden)
-        .cloned()
-        .collect();
 
     // ── Phase 1: prefix (starts_with) matches ─────────────────────────
     // Highest priority — preserves existing exact-prefix completion.
     if completing_skill_arg.is_none() {
-        for name in all_command_names_matching_loaded(prefix, &user_commands, &all_user_commands) {
-            seen.insert(name.clone());
-            let command_key = name.trim_start_matches('/');
-            push_command_entry(
-                &mut entries,
-                &name,
-                command_key,
-                &prefix_lower,
-                locale,
-                &user_commands,
-            );
-        }
-    }
-
-    // ── Phase 2: contains (substring) matches ─────────────────────────
-    // Medium priority — broader catching.
-    if completing_skill_arg.is_none() {
-        for cmd in commands::command_infos() {
-            let name = format!("/{}", cmd.name);
-            if seen.contains(&name) {
-                continue;
-            }
-            let cmd_lower = cmd.name.to_ascii_lowercase();
-            let name_match = cmd_lower.contains(&prefix_lower);
-            let alias_matches = |alias: &str| alias.to_ascii_lowercase().contains(&prefix_lower);
-            if builtin_visible_for_completion_match(
-                cmd,
-                &all_user_commands,
-                name_match,
-                alias_matches,
-            ) {
-                seen.insert(name.clone());
-                push_command_entry(
-                    &mut entries,
-                    &name,
-                    cmd.name,
-                    &prefix_lower,
-                    locale,
-                    &user_commands,
-                );
-            }
-        }
-        for cmd in &user_commands {
-            let name = format!("/{}", cmd.name);
-            if seen.contains(&name) {
-                continue;
-            }
-            let alias_match = cmd.aliases.iter().any(|a| a.contains(&prefix_lower));
-            if cmd.name.contains(&prefix_lower) || alias_match {
-                seen.insert(name.clone());
-                push_command_entry(
-                    &mut entries,
-                    &name,
-                    &cmd.name,
-                    &prefix_lower,
-                    locale,
-                    &user_commands,
-                );
-            }
-        }
-    }
-
-    // ── Phase 3: fuzzy subsequence matches ────────────────────────────
-    // Lowest priority — characters in order, not necessarily consecutive.
-    if completing_skill_arg.is_none() {
-        for cmd in commands::command_infos() {
-            let name = format!("/{}", cmd.name);
-            if seen.contains(&name) {
-                continue;
-            }
-            let cmd_lower = cmd.name.to_ascii_lowercase();
-            let name_match = fuzzy_chars_in_order(&prefix_lower, &cmd_lower);
-            let alias_matches = |alias: &str| fuzzy_chars_in_order(&prefix_lower, alias);
-            if builtin_visible_for_completion_match(
-                cmd,
-                &all_user_commands,
-                name_match,
-                alias_matches,
-            ) {
-                seen.insert(name.clone());
-                push_command_entry(
-                    &mut entries,
-                    &name,
-                    cmd.name,
-                    &prefix_lower,
-                    locale,
-                    &user_commands,
-                );
-            }
-        }
-        for cmd in &user_commands {
-            let name = format!("/{}", cmd.name);
-            if seen.contains(&name) {
-                continue;
-            }
-            let alias_match = cmd
-                .aliases
+        commands::user_registry::with_registry_for_workspace(workspace, |registry| {
+            let all_user_commands = registry.iter().collect::<Vec<_>>();
+            let user_commands = all_user_commands
                 .iter()
-                .any(|a| fuzzy_chars_in_order(&prefix_lower, a));
-            if fuzzy_chars_in_order(&prefix_lower, &cmd.name) || alias_match {
+                .copied()
+                .filter(|cmd| !cmd.hidden)
+                .collect::<Vec<_>>();
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+            for name in
+                all_command_names_matching_loaded(prefix, &user_commands, &all_user_commands)
+            {
                 seen.insert(name.clone());
+                let command_key = name.trim_start_matches('/');
                 push_command_entry(
                     &mut entries,
                     &name,
-                    &cmd.name,
+                    command_key,
                     &prefix_lower,
                     locale,
                     &user_commands,
                 );
             }
-        }
+
+            // ── Phase 2: contains (substring) matches ─────────────────────────
+            // Medium priority — broader catching.
+            for cmd in commands::command_infos() {
+                let name = format!("/{}", cmd.name);
+                if seen.contains(&name) {
+                    continue;
+                }
+                let cmd_lower = cmd.name.to_ascii_lowercase();
+                let name_match = cmd_lower.contains(&prefix_lower);
+                let alias_matches =
+                    |alias: &str| alias.to_ascii_lowercase().contains(&prefix_lower);
+                if builtin_visible_for_completion_match(
+                    cmd,
+                    &all_user_commands,
+                    name_match,
+                    alias_matches,
+                ) {
+                    seen.insert(name.clone());
+                    push_command_entry(
+                        &mut entries,
+                        &name,
+                        cmd.name,
+                        &prefix_lower,
+                        locale,
+                        &user_commands,
+                    );
+                }
+            }
+            for cmd in &user_commands {
+                let name = format!("/{}", cmd.name);
+                if seen.contains(&name) {
+                    continue;
+                }
+                let alias_match = cmd.aliases.iter().any(|a| a.contains(&prefix_lower));
+                if cmd.name.contains(&prefix_lower) || alias_match {
+                    seen.insert(name.clone());
+                    push_command_entry(
+                        &mut entries,
+                        &name,
+                        &cmd.name,
+                        &prefix_lower,
+                        locale,
+                        &user_commands,
+                    );
+                }
+            }
+
+            // ── Phase 3: fuzzy subsequence matches ────────────────────────────
+            // Lowest priority — characters in order, not necessarily consecutive.
+            for cmd in commands::command_infos() {
+                let name = format!("/{}", cmd.name);
+                if seen.contains(&name) {
+                    continue;
+                }
+                let cmd_lower = cmd.name.to_ascii_lowercase();
+                let name_match = fuzzy_chars_in_order(&prefix_lower, &cmd_lower);
+                let alias_matches = |alias: &str| fuzzy_chars_in_order(&prefix_lower, alias);
+                if builtin_visible_for_completion_match(
+                    cmd,
+                    &all_user_commands,
+                    name_match,
+                    alias_matches,
+                ) {
+                    seen.insert(name.clone());
+                    push_command_entry(
+                        &mut entries,
+                        &name,
+                        cmd.name,
+                        &prefix_lower,
+                        locale,
+                        &user_commands,
+                    );
+                }
+            }
+            for cmd in &user_commands {
+                let name = format!("/{}", cmd.name);
+                if seen.contains(&name) {
+                    continue;
+                }
+                let alias_match = cmd
+                    .aliases
+                    .iter()
+                    .any(|a| fuzzy_chars_in_order(&prefix_lower, a));
+                if fuzzy_chars_in_order(&prefix_lower, &cmd.name) || alias_match {
+                    seen.insert(name.clone());
+                    push_command_entry(
+                        &mut entries,
+                        &name,
+                        &cmd.name,
+                        &prefix_lower,
+                        locale,
+                        &user_commands,
+                    );
+                }
+            }
+        });
     }
 
     // ── Skills (only after user has typed `/skill `) ──────────────────
@@ -2542,8 +2536,8 @@ pub(crate) fn slash_completion_hints(
 
 fn all_command_names_matching_loaded(
     prefix: &str,
-    user_commands: &[commands::user_registry::UserCommandMetadata],
-    all_user_commands: &[commands::user_registry::UserCommandMetadata],
+    user_commands: &[&commands::user_registry::UserCommandMetadata],
+    all_user_commands: &[&commands::user_registry::UserCommandMetadata],
 ) -> Vec<String> {
     let prefix = prefix.strip_prefix('/').unwrap_or(prefix).to_lowercase();
     let mut result: Vec<String> = commands::command_infos()
@@ -2575,7 +2569,7 @@ fn all_command_names_matching_loaded(
 
 fn builtin_visible_for_completion_match(
     builtin: &commands::CommandInfo,
-    user_commands: &[commands::user_registry::UserCommandMetadata],
+    user_commands: &[&commands::user_registry::UserCommandMetadata],
     canonical_name_matches: bool,
     alias_matches: impl Fn(&str) -> bool,
 ) -> bool {
@@ -2602,7 +2596,7 @@ fn builtin_visible_for_completion_match(
 
 fn user_command_shadows_builtin_canonical(
     builtin: &commands::CommandInfo,
-    user_commands: &[commands::user_registry::UserCommandMetadata],
+    user_commands: &[&commands::user_registry::UserCommandMetadata],
 ) -> bool {
     user_commands.iter().any(|user| {
         user.name == builtin.name || user.aliases.iter().any(|alias| alias == builtin.name)
@@ -2611,7 +2605,7 @@ fn user_command_shadows_builtin_canonical(
 
 fn user_command_shadows_builtin_alias(
     builtin_alias: &str,
-    user_commands: &[commands::user_registry::UserCommandMetadata],
+    user_commands: &[&commands::user_registry::UserCommandMetadata],
 ) -> bool {
     user_commands.iter().any(|user| {
         user.name == builtin_alias || user.aliases.iter().any(|alias| alias == builtin_alias)
@@ -2626,7 +2620,7 @@ fn push_command_entry(
     command_key: &str,
     prefix_lower: &str,
     locale: crate::localization::Locale,
-    user_commands: &[commands::user_registry::UserCommandMetadata],
+    user_commands: &[&commands::user_registry::UserCommandMetadata],
 ) {
     let user_command = user_commands
         .iter()
@@ -3534,7 +3528,7 @@ mod tests {
             "deploy".to_string(),
             "---\ndescription: Deploy target\nargument-hint: <env>\n---\ndeploy".to_string(),
         )]);
-        let user_commands: Vec<_> = registry.iter().cloned().collect();
+        let user_commands: Vec<_> = registry.iter().collect();
         let mut entries = Vec::new();
 
         push_command_entry(
