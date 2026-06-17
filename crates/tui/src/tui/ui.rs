@@ -7764,7 +7764,13 @@ async fn apply_plan_choice(
         PlanChoice::ExitPlan => {
             apply_mode_update(app, engine_handle, AppMode::Agent).await;
             app.add_message(HistoryCell::System {
-                content: "Exited Plan mode. Switched to Agent mode.".to_string(),
+                content: concat!(
+                    "Exited Plan mode. Switched to Agent mode.\n\n",
+                    "The plan above is for reference only. ",
+                    "Do NOT execute it until the user explicitly asks you to. ",
+                    "Wait for the user's next instruction before taking any action.",
+                )
+                .to_string(),
             });
         }
     }

@@ -985,6 +985,12 @@ struct YoloRestoreState {
     approval_mode: ApprovalMode,
 }
 
+/// Saved approval mode to restore when leaving Plan mode (#3279).
+#[derive(Debug, Clone, Copy)]
+struct PlanRestoreState {
+    approval_mode: ApprovalMode,
+}
+
 // === Sub-state structs for App field organization (#377) ===
 
 /// Vim modal editing mode for the composer input area.
@@ -1618,6 +1624,7 @@ pub struct App {
     #[allow(dead_code)]
     pub yolo: bool,
     yolo_restore: Option<YoloRestoreState>,
+    plan_restore: Option<PlanRestoreState>,
     // Clipboard handler
     pub clipboard: ClipboardHandler,
     // Tool approval session allowlist
@@ -2373,6 +2380,7 @@ impl App {
             hooks,
             yolo: initial_mode == AppMode::Yolo,
             yolo_restore,
+            plan_restore: None,
             clipboard: ClipboardHandler::new(),
             approval_session_approved: HashSet::new(),
             approval_session_denied: HashSet::new(),
@@ -2569,9 +2577,13 @@ impl App {
 
         let entering_yolo = mode == AppMode::Yolo && previous_mode != AppMode::Yolo;
         let leaving_yolo = previous_mode == AppMode::Yolo && mode != AppMode::Yolo;
+        let entering_plan = mode == AppMode::Plan && previous_mode != AppMode::Plan;
+        let leaving_plan = previous_mode == AppMode::Plan && mode != AppMode::Plan;
         self.mode = mode;
         self.status_message = Some(format!("Switched to {} mode", mode.label()));
 
+        // YOLO save/restore: captures the full pre-YOLO permission surface so
+        // exiting YOLO puts the user back exactly where they were.
         if entering_yolo {
             self.yolo_restore = Some(YoloRestoreState {
                 allow_shell: self.allow_shell,
@@ -2585,6 +2597,21 @@ impl App {
             self.allow_shell = restore.allow_shell;
             self.trust_mode = restore.trust_mode;
             self.approval_mode = restore.approval_mode;
+        }
+
+        // Plan save/restore (#3279): Plan mode derives its write-blocking from
+        // the mode itself (turn_loop), but the TUI approval surface reads
+        // `app.approval_mode` without consulting `app.mode`.  Save the Agent-era
+        // approval mode when entering Plan so it is restored when the user
+        // switches back to Agent.
+        if entering_plan {
+            self.plan_restore = Some(PlanRestoreState {
+                approval_mode: self.approval_mode,
+            });
+        } else if leaving_plan {
+            if let Some(restore) = self.plan_restore.take() {
+                self.approval_mode = restore.approval_mode;
+            }
         }
 
         self.yolo = mode == AppMode::Yolo;
