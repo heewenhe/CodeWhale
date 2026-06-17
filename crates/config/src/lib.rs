@@ -6270,6 +6270,29 @@ unix_socket_path = "/tmp/cw-hooks.sock"
     }
 
     #[test]
+    fn config_store_save_preserves_comments_with_other_keys() {
+        // Realistic scenario: user already has api_key + model, adds a comment,
+        // then changes model via `codewhale config set model`.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join(CONFIG_FILE_NAME);
+        fs::write(
+            &config_path,
+            "# my deepseek key\napi_key = \"sk-1234\"\n\n# my current model\nmodel = \"deepseek-v4-flash\"\n",
+        )
+        .expect("write config");
+
+        let mut store = ConfigStore::load(Some(config_path.clone())).expect("load config store");
+        store.config.model = Some("deepseek-v4-pro".to_string());
+        store.save().expect("save");
+
+        let body = fs::read_to_string(&config_path).expect("read config");
+        assert!(body.contains("# my deepseek key"), "api_key comment lost");
+        assert!(body.contains("# my current model"), "model comment lost");
+        assert!(body.contains("model = \"deepseek-v4-pro\""), "new model not written");
+        assert!(body.contains("api_key = \"sk-1234\""), "api_key lost");
+    }
+
+    #[test]
     fn provider_kind_parses_openrouter_and_novita_aliases() {
         assert_eq!(
             ProviderKind::parse("openrouter"),
