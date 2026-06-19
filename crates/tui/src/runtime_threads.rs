@@ -2076,6 +2076,7 @@ impl RuntimeThreadManager {
                     crate::tui::approval::ApprovalMode::Suggest
                 },
                 verbosity: self.config.verbosity.clone(),
+                provenance: crate::core::ops::UserInputProvenance::ExternalUser,
             })
             .await
             .map_err(|e| anyhow!("Failed to start turn: {e}"))?;

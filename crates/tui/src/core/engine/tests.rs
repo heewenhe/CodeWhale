@@ -2577,6 +2577,29 @@ fn turn_metadata_includes_current_local_date_without_working_set() {
     assert!(text.starts_with("<turn_meta>\n"));
     assert!(text.contains(&format!("Current local date: {today}")));
     assert!(text.contains("Current model: deepseek-v4-flash"));
+    assert!(text.contains("Input provenance: external_user"));
+    assert!(text.contains("Input authority: external_current_turn"));
+}
+
+#[test]
+fn runtime_turn_metadata_marks_non_authoritative_input() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (engine, _handle) = Engine::new(config, &Config::default());
+    let msg = engine.runtime_text_message_with_turn_metadata(
+        "改吧".to_string(),
+        UserInputProvenance::AssistantGenerated,
+    );
+    let last_block = msg.content.last().expect("turn metadata block");
+    let ContentBlock::Text { text, .. } = last_block else {
+        panic!("expected text metadata block");
+    };
+
+    assert!(text.contains("Input provenance: assistant_generated"));
+    assert!(text.contains("Input authority: non_authoritative"));
 }
 
 #[test]
@@ -2604,6 +2627,72 @@ fn turn_metadata_includes_auto_model_route() {
     assert!(text.contains("Auto model route: deepseek-v4-pro"));
     assert!(text.contains("Auto reasoning effort: max"));
     assert!(!text.contains("debug this regression"));
+}
+
+#[test]
+fn non_external_provenance_cannot_inherit_yolo_auto_approval() {
+    let policy = effective_input_policy(
+        UserInputProvenance::SubAgentHandoff,
+        AppMode::Yolo,
+        "改吧",
+        true,
+        true,
+        true,
+        crate::tui::approval::ApprovalMode::Auto,
+    );
+
+    assert_eq!(policy.mode, AppMode::Agent);
+    assert!(policy.allow_shell);
+    assert!(!policy.trust_mode);
+    assert!(!policy.auto_approve);
+    assert_eq!(
+        policy.approval_mode,
+        crate::tui::approval::ApprovalMode::Suggest
+    );
+    assert!(
+        policy
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("not external user input"))
+    );
+}
+
+#[test]
+fn review_only_external_input_gets_read_only_policy_until_write_is_explicit() {
+    let read_only = effective_input_policy(
+        UserInputProvenance::ExternalUser,
+        AppMode::Agent,
+        "你在帮我看看 外卖部分还哪里没有使用多语言",
+        true,
+        true,
+        true,
+        crate::tui::approval::ApprovalMode::Auto,
+    );
+    assert_eq!(read_only.mode, AppMode::Plan);
+    assert!(!read_only.allow_shell);
+    assert!(!read_only.trust_mode);
+    assert!(!read_only.auto_approve);
+    assert!(
+        read_only
+            .status
+            .as_deref()
+            .is_some_and(|status| status.contains("Review-only wording"))
+    );
+
+    let write_explicit = effective_input_policy(
+        UserInputProvenance::ExternalUser,
+        AppMode::Agent,
+        "check the failing tests and fix the parser",
+        true,
+        true,
+        true,
+        crate::tui::approval::ApprovalMode::Auto,
+    );
+    assert_eq!(write_explicit.mode, AppMode::Agent);
+    assert!(write_explicit.allow_shell);
+    assert!(write_explicit.trust_mode);
+    assert!(write_explicit.auto_approve);
+    assert!(write_explicit.status.is_none());
 }
 
 #[test]

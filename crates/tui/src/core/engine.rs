@@ -60,7 +60,7 @@ use crate::worker_profile::ModelRoute;
 use crate::working_set::WorkingSet;
 
 use super::events::{Event, TurnOutcomeStatus};
-use super::ops::{Op, SessionSnapshot, USER_SHELL_TOOL_ID_PREFIX};
+use super::ops::{Op, SessionSnapshot, USER_SHELL_TOOL_ID_PREFIX, UserInputProvenance};
 use super::session::Session;
 use super::tool_parser;
 use super::turn::{TurnContext, post_turn_snapshot, pre_turn_snapshot};
@@ -1244,6 +1244,7 @@ impl Engine {
                         dynamic_tools,
                         hook_executor,
                         verbosity,
+                        provenance,
                     } => {
                         self.handle_send_message(
                             content,
@@ -1266,6 +1267,7 @@ impl Engine {
                             dynamic_tools,
                             hook_executor,
                             verbosity,
+                            provenance,
                         )
                         .await;
                     }
@@ -1550,6 +1552,7 @@ impl Engine {
                             Vec::new(),
                             self.config.hook_executor.clone(),
                             self.config.verbosity.clone(),
+                            UserInputProvenance::ExternalUser,
                         )
                         .await;
                     }
@@ -1634,6 +1637,7 @@ impl Engine {
         auto_model: bool,
         reasoning_effort: Option<&str>,
         reasoning_effort_auto: bool,
+        provenance: UserInputProvenance,
     ) -> ContentBlock {
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
         let working_set_summary = self
@@ -1650,6 +1654,15 @@ impl Engine {
             // `render_environment_block` for the prefix-cache rationale).
             format!("Current workspace: {}", self.config.workspace.display()),
             format!("Current model: {routed_model}"),
+            format!("Input provenance: {}", provenance.as_str()),
+            format!(
+                "Input authority: {}",
+                if provenance.can_authorize_work() {
+                    "external_current_turn"
+                } else {
+                    "non_authoritative"
+                }
+            ),
         ];
         if auto_model {
             lines.push(format!("Auto model route: {routed_model}"));
@@ -1686,6 +1699,40 @@ impl Engine {
         reasoning_effort: Option<&str>,
         reasoning_effort_auto: bool,
     ) -> Message {
+        self.user_text_message_with_turn_metadata_for_route_and_provenance(
+            text,
+            routed_model,
+            auto_model,
+            reasoning_effort,
+            reasoning_effort_auto,
+            UserInputProvenance::ExternalUser,
+        )
+    }
+
+    fn runtime_text_message_with_turn_metadata(
+        &self,
+        text: String,
+        provenance: UserInputProvenance,
+    ) -> Message {
+        self.user_text_message_with_turn_metadata_for_route_and_provenance(
+            text,
+            &self.session.model,
+            self.session.auto_model,
+            self.session.reasoning_effort.as_deref(),
+            self.session.reasoning_effort_auto,
+            provenance,
+        )
+    }
+
+    fn user_text_message_with_turn_metadata_for_route_and_provenance(
+        &self,
+        text: String,
+        routed_model: &str,
+        auto_model: bool,
+        reasoning_effort: Option<&str>,
+        reasoning_effort_auto: bool,
+        provenance: UserInputProvenance,
+    ) -> Message {
         // Place the user text first and turn_meta last so that the leading
         // bytes of each user message stay stable across date / model-route /
         // working-set changes. DeepSeek's KV prefix cache matches byte
@@ -1706,6 +1753,7 @@ impl Engine {
                     auto_model,
                     reasoning_effort,
                     reasoning_effort_auto,
+                    provenance,
                 ),
             ],
         }
@@ -1752,6 +1800,7 @@ impl Engine {
             Vec::new(),
             self.config.hook_executor.clone(),
             self.config.verbosity.clone(),
+            UserInputProvenance::SubAgentHandoff,
         )
         .await;
     }
@@ -1871,12 +1920,25 @@ impl Engine {
         dynamic_tools: Vec<DynamicToolSpec>,
         hook_executor: Option<std::sync::Arc<crate::hooks::HookExecutor>>,
         verbosity: Option<String>,
+        provenance: UserInputProvenance,
     ) {
+        let input_policy = effective_input_policy(
+            provenance,
+            mode,
+            &content,
+            allow_shell,
+            trust_mode,
+            auto_approve,
+            approval_mode,
+        );
+        if let Some(status) = input_policy.status.clone() {
+            let _ = self.tx_event.send(Event::status(status)).await;
+        }
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
 
         // Track current mode so mid-turn messages include the right mode in turn metadata.
-        self.current_mode = mode;
+        self.current_mode = input_policy.mode;
 
         // Drain stale steer messages from previous turns.
         while self.rx_steer.try_recv().is_ok() {}
@@ -1972,23 +2034,25 @@ impl Engine {
         self.session
             .working_set
             .observe_user_message(&content, &self.session.workspace);
-        let force_update_plan_first = should_force_update_plan_first(mode, &content);
+        let force_update_plan_first = should_force_update_plan_first(input_policy.mode, &content);
 
-        let agent_approval_mode = agent_approval_mode_for_turn(auto_approve, approval_mode);
-        self.session.auto_approve = auto_approve;
+        let agent_approval_mode =
+            agent_approval_mode_for_turn(input_policy.auto_approve, input_policy.approval_mode);
+        self.session.auto_approve = input_policy.auto_approve;
         // Only track the Agent-mode approval — Yolo/Plan have fixed
         // approval policies that are derived from the mode itself.
-        if mode == AppMode::Agent {
+        if input_policy.mode == AppMode::Agent {
             self.session.approval_mode = agent_approval_mode;
         }
 
         // Add user message to session
-        let user_msg = self.user_text_message_with_turn_metadata_for_route(
+        let user_msg = self.user_text_message_with_turn_metadata_for_route_and_provenance(
             content,
             &model,
             auto_model,
             reasoning_effort.as_deref(),
             reasoning_effort_auto,
+            provenance,
         );
         self.session.add_message(user_msg);
 
@@ -2018,10 +2082,10 @@ impl Engine {
         self.session.reasoning_effort = reasoning_effort;
         self.session.reasoning_effort_auto = reasoning_effort_auto;
         self.session.auto_model = auto_model;
-        self.session.allow_shell = allow_shell;
-        self.config.allow_shell = allow_shell;
-        self.session.trust_mode = trust_mode;
-        self.config.trust_mode = trust_mode;
+        self.session.allow_shell = input_policy.allow_shell;
+        self.config.allow_shell = input_policy.allow_shell;
+        self.session.trust_mode = input_policy.trust_mode;
+        self.config.trust_mode = input_policy.trust_mode;
         self.config.translation_enabled = translation_enabled;
         self.config.show_thinking = show_thinking;
         self.config.verbosity = verbosity;
@@ -2034,14 +2098,14 @@ impl Engine {
         let todo_list = self.config.todos.clone();
         let plan_state = self.config.plan_state.clone();
 
-        let tool_context = self.build_tool_context(mode, auto_approve);
+        let tool_context = self.build_tool_context(input_policy.mode, input_policy.auto_approve);
         let builder = self
-            .build_turn_tool_registry_builder(mode, todo_list, plan_state)
+            .build_turn_tool_registry_builder(input_policy.mode, todo_list, plan_state)
             .with_dynamic_tools(&dynamic_tools);
 
         let fork_context_for_runtime = if self.config.features.enabled(Feature::Subagents) {
             let state = StructuredState::capture(
-                mode.label(),
+                input_policy.mode.label(),
                 self.config.workspace.clone(),
                 std::env::current_dir().ok(),
                 &self.session.working_set,
@@ -2103,7 +2167,7 @@ impl Engine {
             None
         };
 
-        let mut tool_registry = match mode {
+        let mut tool_registry = match input_policy.mode {
             AppMode::Agent | AppMode::Yolo => {
                 if self.config.features.enabled(Feature::Subagents) {
                     let runtime = if let Some(client) = self.deepseek_client.clone() {
@@ -2179,7 +2243,7 @@ impl Engine {
             let mut catalog = build_model_tool_catalog(
                 registry.to_api_tools_with_cache(true),
                 mcp_tools,
-                mode,
+                input_policy.mode,
                 &self.config.tools_always_load,
             );
             for tool in &mut catalog {
@@ -2209,7 +2273,7 @@ impl Engine {
             &mut turn,
             tool_registry.as_ref(),
             tools,
-            mode,
+            input_policy.mode,
             force_update_plan_first,
         ))
         .catch_unwind()
@@ -2305,6 +2369,7 @@ impl Engine {
                         dynamic_tools: dynamic_tools.clone(),
                         hook_executor: self.config.hook_executor.clone(),
                         verbosity: self.config.verbosity.clone(),
+                        provenance: UserInputProvenance::Runtime,
                     })
                     .await;
             }
@@ -3063,6 +3128,118 @@ fn goal_objective_for_prompt(
 // tail. The stable system prompt remains byte-stable, stored history remains
 // byte-stable, and strict chat-template providers never see a system message
 // outside messages[0].
+
+#[derive(Debug, Clone)]
+struct EffectiveInputPolicy {
+    mode: AppMode,
+    allow_shell: bool,
+    trust_mode: bool,
+    auto_approve: bool,
+    approval_mode: crate::tui::approval::ApprovalMode,
+    status: Option<String>,
+}
+
+fn effective_input_policy(
+    provenance: UserInputProvenance,
+    requested_mode: AppMode,
+    content: &str,
+    allow_shell: bool,
+    trust_mode: bool,
+    auto_approve: bool,
+    approval_mode: crate::tui::approval::ApprovalMode,
+) -> EffectiveInputPolicy {
+    let mut mode = requested_mode;
+    let mut allow_shell = allow_shell;
+    let mut trust_mode = trust_mode;
+    let mut auto_approve = auto_approve;
+    let mut approval_mode = approval_mode;
+    let mut status = None;
+
+    if !provenance.can_authorize_work() {
+        let had_auto_authority = matches!(mode, AppMode::Yolo)
+            || trust_mode
+            || auto_approve
+            || matches!(approval_mode, crate::tui::approval::ApprovalMode::Auto);
+        if matches!(mode, AppMode::Yolo) {
+            mode = AppMode::Agent;
+        }
+        trust_mode = false;
+        auto_approve = false;
+        if matches!(approval_mode, crate::tui::approval::ApprovalMode::Auto) {
+            approval_mode = crate::tui::approval::ApprovalMode::Suggest;
+        }
+        if had_auto_authority {
+            status = Some(format!(
+                "Input provenance '{}' is not external user input; continuing with approvals required.",
+                provenance.as_str()
+            ));
+        }
+    } else if mode != AppMode::Plan && is_review_only_user_intent(content) {
+        mode = AppMode::Plan;
+        allow_shell = false;
+        trust_mode = false;
+        auto_approve = false;
+        if matches!(approval_mode, crate::tui::approval::ApprovalMode::Auto) {
+            approval_mode = crate::tui::approval::ApprovalMode::Suggest;
+        }
+        status = Some(
+            "Review-only wording detected; using read-only Plan tools until the user gives an explicit write instruction."
+                .to_string(),
+        );
+    }
+
+    EffectiveInputPolicy {
+        mode,
+        allow_shell,
+        trust_mode,
+        auto_approve,
+        approval_mode,
+        status,
+    }
+}
+
+fn is_review_only_user_intent(content: &str) -> bool {
+    let lower = content.to_ascii_lowercase();
+    let asks_to_inspect = [
+        "look",
+        "check",
+        "review",
+        "inspect",
+        "scan",
+        "audit",
+        "看看",
+        "看一下",
+        "检查",
+        "审查",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    if !asks_to_inspect {
+        return false;
+    }
+
+    let explicit_write = [
+        "fix",
+        "change",
+        "update",
+        "implement",
+        "apply",
+        "patch",
+        "modify",
+        "edit",
+        "write",
+        "commit",
+        "修",
+        "改",
+        "补",
+        "提交",
+        "写",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+
+    !explicit_write
+}
 
 fn agent_approval_mode_for_turn(
     auto_approve: bool,

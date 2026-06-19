@@ -6,6 +6,7 @@
 //! checkpoints, and loop termination.
 
 use super::*;
+use crate::core::ops::UserInputProvenance;
 use crate::prompt_zones::PinnedPrefix;
 
 fn loop_guard_block_tool_result(message: String, kind: AttemptBlockKind) -> ToolResult {
@@ -1185,7 +1186,10 @@ impl Engine {
                                     format!("[REPL round {round_num} output]\n{}", round.stdout)
                                 };
                                 self.add_session_message(
-                                    self.user_text_message_with_turn_metadata(feedback),
+                                    self.runtime_text_message_with_turn_metadata(
+                                        feedback,
+                                        UserInputProvenance::Runtime,
+                                    ),
                                 )
                                 .await;
                             }
@@ -1197,9 +1201,10 @@ impl Engine {
                                     )))
                                     .await;
                                 self.add_session_message(
-                                    self.user_text_message_with_turn_metadata(format!(
-                                        "[REPL round {round_num} execution failed]\n{e}"
-                                    )),
+                                    self.runtime_text_message_with_turn_metadata(
+                                        format!("[REPL round {round_num} execution failed]\n{e}"),
+                                        UserInputProvenance::Runtime,
+                                    ),
                                 )
                                 .await;
                             }
@@ -1259,9 +1264,10 @@ impl Engine {
                     )
                     .await
                 {
-                    self.add_session_message(
-                        self.user_text_message_with_turn_metadata(continuation),
-                    )
+                    self.add_session_message(self.runtime_text_message_with_turn_metadata(
+                        continuation,
+                        UserInputProvenance::Runtime,
+                    ))
                     .await;
                     turn.next_step();
                     continue;
@@ -2444,10 +2450,23 @@ fn subagent_completion_runtime_message(payload: &str) -> Message {
     // role carries no semantic weight here — only template-compatibility cost.
     Message {
         role: "user".to_string(),
-        content: vec![ContentBlock::Text {
-            text: subagent_completion_runtime_text(payload),
-            cache_control: None,
-        }],
+        content: vec![
+            ContentBlock::Text {
+                text: subagent_completion_runtime_text(payload),
+                cache_control: None,
+            },
+            runtime_event_turn_metadata_block(UserInputProvenance::SubAgentHandoff),
+        ],
+    }
+}
+
+fn runtime_event_turn_metadata_block(provenance: UserInputProvenance) -> ContentBlock {
+    ContentBlock::Text {
+        text: format!(
+            "<turn_meta>\nInput provenance: {}\nInput authority: non_authoritative\n</turn_meta>",
+            provenance.as_str()
+        ),
+        cache_control: None,
     }
 }
 

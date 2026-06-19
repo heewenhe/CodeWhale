@@ -6199,6 +6199,7 @@ async fn dispatch_user_message(
             dynamic_tools: Vec::new(),
             hook_executor: app.runtime_services.hook_executor.clone(),
             verbosity: app.verbosity.clone(),
+            provenance: crate::core::ops::UserInputProvenance::ExternalUser,
         })
         .await
     {

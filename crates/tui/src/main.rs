@@ -6464,6 +6464,7 @@ async fn run_exec_agent(
                     .unwrap_or_default()
             },
             verbosity: execution_config.verbosity.clone(),
+            provenance: crate::core::ops::UserInputProvenance::ExternalUser,
         })
         .await?;
 
