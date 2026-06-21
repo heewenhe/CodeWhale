@@ -32,7 +32,7 @@ v0.8.8 onward; Linux RISC-V starts with the first release after v0.8.47.
 ² Provided your toolchain can compile a recent Rust workspace; see
   [Build from source](#7-build-from-source) below.
 
-The Linux **x64** release assets are **static (musl) builds** as of v0.8.62.
+The Linux **x64** release assets are **static (musl) builds** as of v0.8.63.
 They have no glibc dependency and run on any x86_64 Linux, including Ubuntu
 22.04, Debian stable, RHEL/CentOS, and Alpine/musl. SQLite is bundled into the
 binary through `rusqlite`, so no separate `libsqlite3` runtime package is needed.
@@ -46,7 +46,7 @@ builds. They dynamically link normal Linux runtime libraries such as
 
 This floor applies only to the **GNU libc** assets (arm64, riscv64). The static
 x64 (musl) asset has no `GLIBC_*` symbols, so it passes the install preflight
-and runs on older systems without error. In the current v0.8.62 release lane,
+and runs on older systems without error. In the current v0.8.63 release lane,
 the GNU assets are built on Ubuntu 24.04 and can require `GLIBC_2.39`. Ubuntu
 22.04 ships glibc 2.35, so those arm64/riscv64 binaries fail with errors such as:
 
@@ -117,11 +117,11 @@ a download sourced from an impersonating repository or mirror.
 ## 3. Install via npm
 
 npm is the recommended install path. The `codewhale` wrapper is published at
-v0.8.62 (Node 18+; wrapper available for v0.8.56 and later).
+v0.8.63 (Node 18+; wrapper available for v0.8.56 and later).
 
 ```bash
 npm install -g codewhale
-codewhale --version   # 0.8.62
+codewhale --version   # 0.8.63
 ```
 
 `postinstall` downloads the right pair of binaries from the matching GitHub
