@@ -1761,7 +1761,8 @@ fn delegate_server_to_tui(
     resolved_runtime: &ResolvedRuntimeOptions,
     passthrough: Vec<String>,
 ) -> Result<()> {
-    let std_cmd = build_tui_command(cli, resolved_runtime, passthrough)?;
+    let mut std_cmd = build_tui_command(cli, resolved_runtime, passthrough)?;
+    install_server_parent_death_signal(&mut std_cmd);
     let tui = PathBuf::from(std_cmd.get_program());
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1781,6 +1782,30 @@ fn delegate_server_to_tui(
         }
     })
 }
+
+/// On Linux, ask the kernel to terminate the delegated server if the dispatcher
+/// dies before it can run the graceful shutdown supervisor. This covers the
+/// hard parent-death edge of #3259 for `SIGKILL`, OOM, or abrupt process exit.
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+fn install_server_parent_death_signal(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: `pre_exec` runs in the child between fork and exec. The closure
+    // only calls `libc::prctl` with constant arguments and does not touch heap
+    // memory or parent-held locks.
+    unsafe {
+        cmd.pre_exec(|| {
+            let result = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0);
+            if result == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+#[cfg(not(all(target_os = "linux", not(target_env = "ohos"))))]
+fn install_server_parent_death_signal(_cmd: &mut Command) {}
 
 /// Outcome of supervising a delegated server child.
 #[derive(Debug)]
@@ -1899,6 +1924,15 @@ mod server_teardown_tests {
             child.id().is_none(),
             "delegated child must be reaped after dispatcher teardown"
         );
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    #[test]
+    fn parent_death_signal_hook_does_not_break_spawn() {
+        let mut cmd = Command::new("true");
+        install_server_parent_death_signal(&mut cmd);
+        let status = cmd.status().expect("spawn true with parent-death hook");
+        assert!(status.success());
     }
 }
 
