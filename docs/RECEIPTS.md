@@ -43,7 +43,8 @@ The current receipt includes:
 
 - `diff_fingerprint`: SHA-256 of the reviewed diff.
 - `provider` and `model`: the routed review provider/model.
-- `checks_run`: local checks attached to the receipt when available.
+- `checks_run`: local checks attached to the receipt when available. Empty
+  means no checks were attached; attached checks must report a passing status.
 - `findings`: structured issue/suggestion counts and issue locations when the
   review output is structured.
 - `unresolved_risk`: a conservative summary derived from unresolved findings.

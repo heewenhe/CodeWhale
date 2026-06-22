@@ -402,7 +402,7 @@ fn severity_rank(severity: &str) -> u8 {
 fn review_receipt_check_status_passes(status: &str) -> bool {
     matches!(
         status.trim().to_ascii_lowercase().as_str(),
-        "passed" | "pass" | "success" | "ok" | "skipped" | "not_run"
+        "passed" | "pass" | "success" | "ok"
     )
 }
 
@@ -1107,6 +1107,33 @@ mod tests {
             validation
                 .reason
                 .contains("review receipt check 'cargo test' did not pass")
+        );
+    }
+
+    #[test]
+    fn review_receipt_validation_rejects_attached_not_run_check() {
+        let diff = "diff --git a/a b/a\n+ok\n";
+        let output = ReviewOutput::from_str("Looks good");
+        let receipt = build_review_receipt(
+            "working-tree",
+            diff,
+            "deepseek",
+            "deepseek-v4-flash",
+            &output,
+            "Looks good",
+            vec![ReviewReceiptCheck {
+                name: "cargo test".to_string(),
+                status: "not_run".to_string(),
+            }],
+        );
+
+        let validation = validate_review_receipt_for_diff(diff, &receipt, None);
+
+        assert!(!validation.passed);
+        assert!(
+            validation
+                .reason
+                .contains("review receipt check 'cargo test' did not pass: not_run")
         );
     }
 }
