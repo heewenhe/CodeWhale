@@ -101,15 +101,17 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "source_ref=${source_ref}" >> "$GITHUB_OUTPUT"
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+      - name: Require release source on main
+        run: ./scripts/release/ensure-release-on-main.sh "${{ steps.release.outputs.sha }}"
 
   build:
     needs: [parity, resolve]
     # `parity` is gated to tag-push events. On manual `workflow_dispatch`,
-    # parity is skipped, so let `build` proceed when parity either succeeded
-    # or was skipped — but never when it actually failed or the run was
-    # cancelled. Operators using dispatch are expected to have already run
-    # the same gates locally / via ci.yml on `main`.
-    if: ${{ !cancelled() && (needs.parity.result == 'success' || needs.parity.result == 'skipped') }}
+    # parity is skipped, so let `build` proceed when resolve succeeded and
+    # parity either succeeded or was skipped — but never when parity actually
+    # failed or the run was cancelled. Operators using dispatch are expected
+    # to have already run the same gates locally / via ci.yml on `main`.
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.parity.result == 'success' || needs.parity.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:

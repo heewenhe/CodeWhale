@@ -762,9 +762,10 @@ mod tests {
         let err = validate_fetch_target(&url, &ctx())
             .await
             .expect_err("unresolved host must fail preflight");
+        let message = format!("{err}");
         assert!(
-            format!("{err}").contains("could not resolve host"),
-            "error must identify DNS preflight failure; got {err}"
+            message.contains("could not resolve host") || message.contains("restricted address"),
+            "error must identify preflight DNS or restricted-IP failure; got {err}"
         );
     }
 

@@ -595,8 +595,9 @@ fn paths_equivalent(lhs: &Path, rhs: &Path) -> bool {
 fn find_git_root(path: &Path) -> Option<PathBuf> {
     let mut current = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     loop {
-        if is_git_metadata_entry(&current.join(".git")) {
-            return Some(current);
+        let git_entry = current.join(".git");
+        if git_entry.exists() {
+            return is_git_metadata_entry(&git_entry).then_some(current);
         }
         match current.parent() {
             Some(parent) if parent != current => current = parent.to_path_buf(),
@@ -1303,6 +1304,7 @@ mod tests {
         let workspace_b = tmp.path().join("bb").join("bbb");
         fs::create_dir_all(&workspace_a).expect("mkdir workspace a");
         fs::create_dir_all(&workspace_b).expect("mkdir workspace b");
+        fs::create_dir_all(tmp.path().join(".git")).expect("mkdir invalid git boundary");
 
         write_session_record(
             &manager,

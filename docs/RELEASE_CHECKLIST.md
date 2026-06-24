@@ -77,6 +77,9 @@ Run, in order, from the repo root:
 
 - [ ] Branch is pushed: `git push -u origin work/vX.Y.Z-...`
 - [ ] PR opened with `gh pr create --base main --title "chore(release): prepare vX.Y.Z"`
+- [ ] The PR targets `main` and will be merged before any `vX.Y.Z` tag is
+      pushed. Do not tag a release-only branch; GitHub will not process
+      `Closes #N` keywords until those commits reach the default branch.
 - [ ] PR body includes:
   - one-paragraph summary of the release theme
   - a punch list of the new commits since the last release
@@ -137,6 +140,10 @@ release anxiety: contributors cannot tell whether their work merged.
 
 ## 7. Tag and release (after review)
 
+- [ ] Release PR is merged into `main`, then local `main` is fast-forwarded:
+      `git switch main && git fetch origin main && git merge --ff-only origin/main`
+- [ ] The release source is reachable from `main`:
+      `./scripts/release/ensure-release-on-main.sh HEAD`
 - [ ] `git tag -s vX.Y.Z -m "vX.Y.Z"`
 - [ ] `git push origin vX.Y.Z`
 - [ ] The `release.yml` workflow has built and uploaded artifacts to the

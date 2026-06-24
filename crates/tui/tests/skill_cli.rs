@@ -1,4 +1,7 @@
-//! Integration tests for the community-skill installer (#140).
+//! Integration tests for the community-skill CLI flows (#140).
+//!
+//! Keep this file name free of `install`: Windows can treat unmanifested test
+//! binaries with installer-like names as elevation-required programs.
 //!
 //! These tests exercise the full validation pipeline against a tiny in-process
 //! HTTP server, so the network gate, download cap, tarball validation, atomic
