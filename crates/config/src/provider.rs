@@ -540,6 +540,59 @@ provider!(
     aliases: ["deep-infra", "deep_infra"]
 );
 
+/// User-defined OpenAI-compatible endpoint (#1519).
+///
+/// A single dynamic provider identity for arbitrary `[providers.<name>]
+/// kind="openai-compatible"` config entries. Unlike the built-in providers it
+/// carries no real default base URL/model/env var: the concrete endpoint, model
+/// id, and auth env var all arrive from the named `[providers.<name>]` config
+/// table at route time. The placeholder base URL/model here exist only so the
+/// descriptor stays well-formed (non-empty) for conformance; runtime routing
+/// always supplies a `base_url_override` and a wire model id, so these
+/// placeholders are never used to reach the network.
+pub struct Custom;
+
+impl Provider for Custom {
+    fn id(&self) -> &'static str {
+        "custom"
+    }
+
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Custom
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Custom (OpenAI-compatible)"
+    }
+
+    fn default_base_url(&self) -> &'static str {
+        // Placeholder only; the real endpoint comes from the named config table
+        // via the route's base_url_override. Loopback so a misconfigured custom
+        // provider fails closed locally rather than reaching a public host.
+        "http://localhost/v1"
+    }
+
+    fn default_model(&self) -> &'static str {
+        // Placeholder only; the real model id comes from config and is preserved
+        // verbatim as the wire model id.
+        "custom-model"
+    }
+
+    fn env_vars(&self) -> &'static [&'static str] {
+        // No built-in env var: the auth env var is named per-entry via
+        // `[providers.<name>] api_key_env = "..."`.
+        &[]
+    }
+
+    fn provider_config_key(&self) -> &'static str {
+        "custom"
+    }
+
+    fn wire(&self) -> WireFormat {
+        WireFormat::ChatCompletions
+    }
+}
+
 static DEEPSEEK: Deepseek = Deepseek;
 static DEEPSEEK_ANTHROPIC: DeepseekAnthropic = DeepseekAnthropic;
 static NVIDIA_NIM: NvidiaNim = NvidiaNim;
@@ -567,8 +620,9 @@ static ZAI: Zai = Zai;
 static STEPFUN: Stepfun = Stepfun;
 static MINIMAX: Minimax = Minimax;
 static DEEPINFRA: Deepinfra = Deepinfra;
+static CUSTOM: Custom = Custom;
 
-static PROVIDER_REGISTRY: [&dyn Provider; 27] = [
+static PROVIDER_REGISTRY: [&dyn Provider; 28] = [
     &DEEPSEEK,
     &DEEPSEEK_ANTHROPIC,
     &NVIDIA_NIM,
@@ -596,6 +650,7 @@ static PROVIDER_REGISTRY: [&dyn Provider; 27] = [
     &STEPFUN,
     &MINIMAX,
     &DEEPINFRA,
+    &CUSTOM,
 ];
 
 /// Return all built-in provider metadata entries in `ProviderKind::ALL` order.

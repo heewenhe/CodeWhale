@@ -1458,7 +1458,8 @@ pub(super) fn apply_reasoning_effort(
             | ApiProvider::WanjieArk
             | ApiProvider::Qianfan
             | ApiProvider::Arcee
-            | ApiProvider::Huggingface => {}
+            | ApiProvider::Huggingface
+            | ApiProvider::Custom => {}
             ApiProvider::Moonshot => {
                 // #3024: Kimi models accept thinking enable/disable.
                 body["thinking"] = json!({ "type": "disabled" });
@@ -1538,7 +1539,8 @@ pub(super) fn apply_reasoning_effort(
             ApiProvider::Openai
             | ApiProvider::WanjieArk
             | ApiProvider::Qianfan
-            | ApiProvider::OpenaiCodex => {}
+            | ApiProvider::OpenaiCodex
+            | ApiProvider::Custom => {}
             ApiProvider::Moonshot => {
                 // #3024: Kimi models accept thinking enable.
                 body["thinking"] = json!({ "type": "enabled" });
@@ -1605,7 +1607,8 @@ pub(super) fn apply_reasoning_effort(
             ApiProvider::Openai
             | ApiProvider::WanjieArk
             | ApiProvider::Qianfan
-            | ApiProvider::OpenaiCodex => {}
+            | ApiProvider::OpenaiCodex
+            | ApiProvider::Custom => {}
             ApiProvider::Moonshot => {
                 // #3024: Kimi models accept thinking enable.
                 body["thinking"] = json!({ "type": "enabled" });
@@ -4539,5 +4542,58 @@ mod tests {
         assert_eq!(from_candidate.base_url, from_new.base_url);
         assert_eq!(from_candidate.default_model, from_new.default_model);
         assert_eq!(from_candidate.api_provider, from_new.api_provider);
+    }
+
+    #[test]
+    fn from_candidate_binds_custom_provider_base_url_and_model() {
+        // #1519: a custom OpenAI-compatible provider resolves to a candidate
+        // whose endpoint/model come from the named `[providers.<name>]` table,
+        // and `from_candidate` must bind that verbatim base URL + wire model.
+        let mut custom = std::collections::HashMap::new();
+        custom.insert(
+            "my_thing".to_string(),
+            ProviderConfig {
+                kind: Some("openai-compatible".to_string()),
+                base_url: Some("https://api.example.com/v1".to_string()),
+                model: Some("custom-model-v1".to_string()),
+                api_key_env: Some("EXAMPLE_API_KEY_FROM_CANDIDATE_TEST".to_string()),
+                ..Default::default()
+            },
+        );
+        let config = Config {
+            provider: Some("my_thing".to_string()),
+            providers: Some(ProvidersConfig {
+                custom,
+                ..Default::default()
+            }),
+            ..Config::default()
+        };
+
+        // The config names a custom provider, so it must resolve as Custom.
+        assert_eq!(config.api_provider(), ApiProvider::Custom);
+
+        let route = crate::route_runtime::resolve_runtime_route(&config, ApiProvider::Custom, None)
+            .expect("custom route should resolve");
+
+        // Provide the key the route's auth path will read.
+        // SAFETY: single-threaded unit test mutating a uniquely-named var.
+        unsafe {
+            std::env::set_var("EXAMPLE_API_KEY_FROM_CANDIDATE_TEST", "sk-custom");
+        }
+        let client = DeepSeekClient::from_candidate(&route.config, &route.candidate)
+            .expect("client should construct from custom candidate");
+        unsafe {
+            std::env::remove_var("EXAMPLE_API_KEY_FROM_CANDIDATE_TEST");
+        }
+
+        assert_eq!(client.base_url, "https://api.example.com/v1");
+        assert_eq!(client.default_model, "custom-model-v1");
+        assert_eq!(client.api_provider, ApiProvider::Custom);
+        // The candidate carried the custom endpoint + verbatim wire model.
+        assert_eq!(
+            route.candidate.endpoint.base_url,
+            "https://api.example.com/v1"
+        );
+        assert_eq!(route.candidate.wire_model_id.as_str(), "custom-model-v1");
     }
 }

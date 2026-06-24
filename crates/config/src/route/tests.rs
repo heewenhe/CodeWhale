@@ -425,6 +425,30 @@ fn resolver_custom_endpoint_allows_namespaced_selector_for_strict_provider() {
 }
 
 #[test]
+fn resolver_explicit_custom_with_base_url_override_passes_model_through_verbatim() {
+    // #1519: an explicit `Custom` provider with a base_url override resolves via
+    // the LocalOrCustom pass-through, preserving even a namespaced selector as
+    // the verbatim wire id and binding the override endpoint + Chat Completions.
+    let r = RouteResolver::new();
+    let request = RouteRequest {
+        explicit_provider: Some(ProviderKind::Custom),
+        model_selector: Some(LogicalModelRef::from("vendor/custom-model-v1")),
+        saved_provider_model: None,
+        base_url_override: Some("https://api.example.com/v1".to_string()),
+    };
+    let out = r
+        .resolve(&request)
+        .expect("custom provider should resolve via pass-through");
+    assert_eq!(out.provider_kind, ProviderKind::Custom);
+    assert_eq!(out.provider_id.as_str(), "custom");
+    assert_eq!(out.wire_model_id.as_str(), "vendor/custom-model-v1");
+    assert_eq!(out.endpoint.base_url, "https://api.example.com/v1");
+    assert_eq!(out.protocol, crate::route::RequestProtocol::ChatCompletions);
+    assert!(out.validation.ok);
+    assert!(out.validation.messages.is_empty());
+}
+
+#[test]
 fn resolver_strict_direct_rejects_models_dev_offering_from_another_provider() {
     let r = models_dev_route_resolver();
     let out = r.resolve(&req(Some(ProviderKind::Deepseek), Some("glm-5.2")));

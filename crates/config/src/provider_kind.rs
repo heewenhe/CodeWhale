@@ -96,10 +96,18 @@ pub enum ProviderKind {
     Minimax,
     #[serde(alias = "deep-infra", alias = "deep_infra")]
     Deepinfra,
+    /// User-defined OpenAI-compatible endpoint (#1519).
+    ///
+    /// A single dynamic identity for arbitrary `[providers.<name>]
+    /// kind="openai-compatible"` entries. It speaks the OpenAI Chat Completions
+    /// wire protocol and carries no built-in base URL/model — the concrete
+    /// endpoint and model arrive via config (`base_url` / `model`) and the
+    /// route's `base_url_override`, never from this static descriptor.
+    Custom,
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::Deepseek,
         Self::DeepseekAnthropic,
         Self::NvidiaNim,
@@ -127,6 +135,7 @@ impl ProviderKind {
         Self::Stepfun,
         Self::Minimax,
         Self::Deepinfra,
+        Self::Custom,
     ];
 
     #[must_use]

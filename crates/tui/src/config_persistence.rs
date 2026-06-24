@@ -315,6 +315,13 @@ fn provider_base_url_table_key(provider: ApiProvider) -> anyhow::Result<&'static
         ApiProvider::Zai => Ok("zai"),
         ApiProvider::Stepfun => Ok("stepfun"),
         ApiProvider::Minimax => Ok("minimax"),
+        // Custom providers live under a user-chosen `[providers.<name>]` table,
+        // not a fixed key. Persisting base_url through this static-key path is
+        // out of scope for the #1519 constrained slice; users edit the named
+        // table directly.
+        ApiProvider::Custom => {
+            anyhow::bail!("custom providers store base_url in their named [providers.<name>] table")
+        }
     }
 }
 

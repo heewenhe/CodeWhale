@@ -144,6 +144,13 @@ pub struct ProvidersToml {
     pub minimax: ProviderConfigToml,
     #[serde(default, alias = "deep-infra", alias = "deep_infra")]
     pub deepinfra: ProviderConfigToml,
+    /// Catch-all table for the dynamic OpenAI-compatible custom provider
+    /// identity (#1519). Arbitrary `[providers.<name>]` tables are handled by
+    /// the tui-side flatten map; this named slot keeps the canonical
+    /// `ProviderKind::Custom` lookups total without leaking into another
+    /// provider's config.
+    #[serde(default)]
+    pub custom: ProviderConfigToml,
 }
 
 /// Sibling `permissions.toml` schema.
@@ -201,6 +208,7 @@ impl ProvidersToml {
             ProviderKind::Stepfun => &self.stepfun,
             ProviderKind::Minimax => &self.minimax,
             ProviderKind::Deepinfra => &self.deepinfra,
+            ProviderKind::Custom => &self.custom,
         }
     }
 
@@ -233,6 +241,7 @@ impl ProvidersToml {
             ProviderKind::Stepfun => &mut self.stepfun,
             ProviderKind::Minimax => &mut self.minimax,
             ProviderKind::Deepinfra => &mut self.deepinfra,
+            ProviderKind::Custom => &mut self.custom,
         }
     }
 }
@@ -1890,6 +1899,10 @@ impl ConfigToml {
                 ProviderKind::Stepfun => DEFAULT_STEPFUN_BASE_URL.to_string(),
                 ProviderKind::Minimax => DEFAULT_MINIMAX_BASE_URL.to_string(),
                 ProviderKind::Deepinfra => DEFAULT_DEEPINFRA_BASE_URL.to_string(),
+                // The custom provider has no built-in endpoint; fall back to its
+                // descriptor placeholder so the lookup is total. Real custom
+                // routes always supply a configured base_url before this point.
+                ProviderKind::Custom => provider.provider().default_base_url().to_string(),
             })
         };
         // CLI flag wins outright. Otherwise: config-file → injected secrets/env.
@@ -2460,6 +2473,8 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Stepfun => DEFAULT_STEPFUN_MODEL,
         ProviderKind::Minimax => DEFAULT_MINIMAX_MODEL,
         ProviderKind::Deepinfra => DEFAULT_DEEPINFRA_MODEL,
+        // No built-in default model; the registry placeholder keeps this total.
+        ProviderKind::Custom => provider.provider().default_model(),
     }
 }
 
@@ -2492,6 +2507,8 @@ fn default_base_url_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Stepfun => DEFAULT_STEPFUN_BASE_URL,
         ProviderKind::Minimax => DEFAULT_MINIMAX_BASE_URL,
         ProviderKind::Deepinfra => DEFAULT_DEEPINFRA_BASE_URL,
+        // No built-in default base URL; the registry placeholder keeps this total.
+        ProviderKind::Custom => provider.provider().default_base_url(),
     }
 }
 
@@ -4225,6 +4242,9 @@ impl EnvRuntimeOverrides {
             ProviderKind::Stepfun => self.stepfun_base_url.clone(),
             ProviderKind::Minimax => self.minimax_base_url.clone(),
             ProviderKind::Deepinfra => self.deepinfra_base_url.clone(),
+            // No dedicated CODEWHALE_CUSTOM_BASE_URL env override: a custom
+            // provider's base URL comes from its `[providers.<name>]` table.
+            ProviderKind::Custom => None,
         }
     }
 

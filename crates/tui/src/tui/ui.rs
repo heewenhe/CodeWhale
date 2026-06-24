@@ -8348,6 +8348,7 @@ fn render(f: &mut Frame, app: &mut App) {
             crate::config::ApiProvider::Zai => Some("Z.ai"),
             crate::config::ApiProvider::Stepfun => Some("StepFun"),
             crate::config::ApiProvider::Minimax => Some("MiniMax"),
+            crate::config::ApiProvider::Custom => Some("Custom"),
         };
         let status_indicator_started_at = if app.low_motion {
             None
@@ -9481,6 +9482,13 @@ async fn apply_provider_picker_api_key(
     if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
         config.api_key = Some(api_key);
     } else {
+        // Capture the custom entry key before borrowing `providers` (#1519).
+        let custom_key = (provider == ApiProvider::Custom).then(|| {
+            config
+                .provider
+                .clone()
+                .unwrap_or_else(|| "__custom__".to_string())
+        });
         let providers = config
             .providers
             .get_or_insert_with(ProvidersConfig::default);
@@ -9489,6 +9497,10 @@ async fn apply_provider_picker_api_key(
                 // Guarded by the outer `if` above; safety net against refactors.
                 return;
             }
+            ApiProvider::Custom => providers
+                .custom
+                .entry(custom_key.expect("custom key captured for custom provider"))
+                .or_default(),
             ApiProvider::DeepseekAnthropic => &mut providers.deepseek_anthropic,
             ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
             ApiProvider::Openai => &mut providers.openai,
@@ -9550,11 +9562,23 @@ async fn apply_provider_picker_auth_mode(
 }
 
 fn set_provider_auth_mode_in_memory(config: &mut Config, provider: ApiProvider, auth_mode: String) {
+    // Capture the custom entry key (the selected provider name) before the
+    // mutable borrow of `providers` below (#1519).
+    let custom_key = (provider == ApiProvider::Custom).then(|| {
+        config
+            .provider
+            .clone()
+            .unwrap_or_else(|| "__custom__".to_string())
+    });
     let providers = config
         .providers
         .get_or_insert_with(ProvidersConfig::default);
     let entry: &mut ProviderConfig = match provider {
         ApiProvider::Deepseek | ApiProvider::DeepseekCN => return,
+        ApiProvider::Custom => providers
+            .custom
+            .entry(custom_key.expect("custom key captured for custom provider"))
+            .or_default(),
         ApiProvider::DeepseekAnthropic => &mut providers.deepseek_anthropic,
         ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
         ApiProvider::Openai => &mut providers.openai,

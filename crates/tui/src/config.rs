@@ -67,6 +67,14 @@ pub enum ApiProvider {
     Stepfun,
     Minimax,
     Deepinfra,
+    /// User-defined OpenAI-compatible endpoint (#1519).
+    ///
+    /// Selected when `provider = "<name>"` names a `[providers.<name>]
+    /// kind="openai-compatible"` table. A single dynamic identity that maps to
+    /// [`codewhale_config::ProviderKind::Custom`] and routes via the OpenAI Chat
+    /// Completions wire protocol; the concrete endpoint/model/auth come from the
+    /// named config table, not from this variant.
+    Custom,
 }
 
 impl ApiProvider {
@@ -191,6 +199,9 @@ impl ApiProvider {
             Self::Minimax => "https://platform.minimax.io/docs/guides/quickstart-preparation",
             Self::Deepinfra => "https://deepinfra.com/dash/api_keys",
             Self::OpenaiCodex | Self::Sglang | Self::Vllm | Self::Ollama => return None,
+            // Custom endpoints have no canonical credential page; the user
+            // supplies the key via their own `api_key_env`.
+            Self::Custom => return None,
         })
     }
 
@@ -202,7 +213,7 @@ impl ApiProvider {
 
     /// `ApiProvider` discriminant → `ProviderKind` lookup.
     /// Index 1 is `None` for the legacy `DeepseekCN` variant.
-    const KIND_LOOKUP: [Option<codewhale_config::ProviderKind>; 28] = [
+    const KIND_LOOKUP: [Option<codewhale_config::ProviderKind>; 29] = [
         Some(codewhale_config::ProviderKind::Deepseek),
         None, // DeepseekCN
         Some(codewhale_config::ProviderKind::DeepseekAnthropic),
@@ -231,10 +242,11 @@ impl ApiProvider {
         Some(codewhale_config::ProviderKind::Stepfun),
         Some(codewhale_config::ProviderKind::Minimax),
         Some(codewhale_config::ProviderKind::Deepinfra),
+        Some(codewhale_config::ProviderKind::Custom),
     ];
 
     /// `ProviderKind` discriminant → `ApiProvider` lookup.
-    const FROM_KIND_LOOKUP: [Self; 27] = [
+    const FROM_KIND_LOOKUP: [Self; 28] = [
         Self::Deepseek,
         Self::DeepseekAnthropic,
         Self::NvidiaNim,
@@ -262,6 +274,7 @@ impl ApiProvider {
         Self::Stepfun,
         Self::Minimax,
         Self::Deepinfra,
+        Self::Custom,
     ];
 
     /// Map to the config-level `ProviderKind`.
@@ -1116,6 +1129,9 @@ pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'stati
             MINIMAX_M2_1_HIGHSPEED_MODEL,
             MINIMAX_M2_MODEL,
         ],
+        // Custom endpoints expose no built-in completion names; the user
+        // supplies their own model id (#1519).
+        ApiProvider::Custom => Vec::new(),
     }
 }
 
@@ -2367,6 +2383,33 @@ pub struct ProviderConfig {
     #[serde(alias = "reasoningStyle", alias = "reasoningStreamStyle")]
     pub reasoning_stream_style: Option<String>,
     pub auth: Option<codewhale_config::ProviderAuthSourceToml>,
+    /// Wire-protocol selector for a custom `[providers.<name>]` entry (#1519).
+    ///
+    /// Only `"openai-compatible"` is accepted for now; any other value is
+    /// rejected at selection time so unsupported wire formats fail loudly rather
+    /// than silently routing as OpenAI. Built-in providers leave this unset.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Name of the environment variable holding this custom provider's API key
+    /// (#1519), e.g. `api_key_env = "EXAMPLE_API_KEY"`. The key value itself is
+    /// never stored in config; only the env var name is.
+    #[serde(default, alias = "apiKeyEnv")]
+    pub api_key_env: Option<String>,
+}
+
+impl ProviderConfig {
+    /// True when this entry selects the OpenAI-compatible custom wire protocol.
+    ///
+    /// `kind` is matched case-insensitively against `openai-compatible` (and the
+    /// `openai_compatible` underscore spelling). Returns `false` when `kind` is
+    /// unset (built-in providers) or names any other value.
+    #[must_use]
+    pub fn is_openai_compatible_custom(&self) -> bool {
+        self.kind.as_deref().is_some_and(|kind| {
+            let normalized = kind.trim().to_ascii_lowercase().replace('_', "-");
+            normalized == "openai-compatible"
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -2461,6 +2504,23 @@ pub struct ProvidersConfig {
     pub stepfun: ProviderConfig,
     #[serde(default)]
     pub minimax: ProviderConfig,
+    /// Arbitrary user-named custom providers (#1519).
+    ///
+    /// Captures every `[providers.<name>]` table whose key is not one of the
+    /// built-in providers above. Each entry is an OpenAI-compatible custom
+    /// endpoint selected via `provider = "<name>"`; routing reads its
+    /// `base_url` / `model` / `api_key_env` through [`ApiProvider::Custom`].
+    #[serde(flatten, default)]
+    pub custom: HashMap<String, ProviderConfig>,
+}
+
+impl ProvidersConfig {
+    /// Look up a user-defined custom provider table by its `[providers.<name>]`
+    /// key (#1519). Returns `None` when no entry with that exact name exists.
+    #[must_use]
+    pub fn custom_provider_config(&self, name: &str) -> Option<&ProviderConfig> {
+        self.custom.get(name)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -2704,26 +2764,47 @@ impl Config {
 
     #[must_use]
     pub fn api_provider(&self) -> ApiProvider {
-        self.provider
+        if let Some(provider) = self.provider.as_deref().and_then(ApiProvider::parse) {
+            return provider;
+        }
+        // #1519 safety fix: when `provider = "<name>"` is not a built-in provider
+        // but names a `[providers.<name>]` custom table, route as the dynamic
+        // custom identity. This MUST precede the DeepSeek fallback below so an
+        // arbitrary custom name can never silently misroute to DeepSeek.
+        if let Some(name) = self.provider.as_deref()
+            && self
+                .providers
+                .as_ref()
+                .and_then(|providers| providers.custom_provider_config(name))
+                .is_some()
+        {
+            return ApiProvider::Custom;
+        }
+        self.base_url
             .as_deref()
-            .and_then(ApiProvider::parse)
-            .unwrap_or_else(|| {
+            .filter(|base| base.contains("integrate.api.nvidia.com"))
+            .map(|_| ApiProvider::NvidiaNim)
+            .or_else(|| {
                 self.base_url
                     .as_deref()
-                    .filter(|base| base.contains("integrate.api.nvidia.com"))
-                    .map(|_| ApiProvider::NvidiaNim)
-                    .or_else(|| {
-                        self.base_url
-                            .as_deref()
-                            .filter(|base| base.contains("api.deepseeki.com"))
-                            .map(|_| ApiProvider::DeepseekCN)
-                    })
-                    .unwrap_or(ApiProvider::Deepseek)
+                    .filter(|base| base.contains("api.deepseeki.com"))
+                    .map(|_| ApiProvider::DeepseekCN)
             })
+            .unwrap_or(ApiProvider::Deepseek)
     }
 
     pub(crate) fn provider_config_for(&self, provider: ApiProvider) -> Option<&ProviderConfig> {
         let providers = self.providers.as_ref()?;
+        // The custom provider's config lives in the flatten map, keyed by the
+        // selected `provider = "<name>"` value, not in a fixed field (#1519).
+        // Resolve it by name so every existing reader (auth, headers, base_url)
+        // transparently sees the named table.
+        if provider == ApiProvider::Custom {
+            return self
+                .provider
+                .as_deref()
+                .and_then(|name| providers.custom_provider_config(name));
+        }
         Some(match provider {
             ApiProvider::Deepseek => &providers.deepseek,
             ApiProvider::DeepseekCN => &providers.deepseek_cn,
@@ -2753,6 +2834,8 @@ impl Config {
             ApiProvider::Zai => &providers.zai,
             ApiProvider::Stepfun => &providers.stepfun,
             ApiProvider::Minimax => &providers.minimax,
+            // Handled by the name-keyed early return above (#1519).
+            ApiProvider::Custom => unreachable!("custom provider resolved by name above"),
         })
     }
 
@@ -2767,7 +2850,19 @@ impl Config {
     }
 
     pub(crate) fn provider_config_for_mut(&mut self, provider: ApiProvider) -> &mut ProviderConfig {
+        // The custom provider's mutable slot is keyed by the selected
+        // `provider = "<name>"` value in the flatten map (#1519). Capture the
+        // name before borrowing `providers` mutably; fall back to a private
+        // sentinel key so the accessor stays total when no name is set.
+        let custom_key = (provider == ApiProvider::Custom).then(|| {
+            self.provider
+                .clone()
+                .unwrap_or_else(|| "__custom__".to_string())
+        });
         let providers = self.providers.get_or_insert_with(ProvidersConfig::default);
+        if let Some(key) = custom_key {
+            return providers.custom.entry(key).or_default();
+        }
         match provider {
             ApiProvider::Deepseek => &mut providers.deepseek,
             ApiProvider::DeepseekCN => &mut providers.deepseek_cn,
@@ -2797,6 +2892,8 @@ impl Config {
             ApiProvider::Zai => &mut providers.zai,
             ApiProvider::Stepfun => &mut providers.stepfun,
             ApiProvider::Minimax => &mut providers.minimax,
+            // Handled by the name-keyed early return above (#1519).
+            ApiProvider::Custom => unreachable!("custom provider resolved by name above"),
         }
     }
 
@@ -2946,6 +3043,11 @@ impl Config {
             ApiProvider::Stepfun => DEFAULT_STEPFUN_MODEL,
             ApiProvider::Anthropic => DEFAULT_ANTHROPIC_MODEL,
             ApiProvider::Minimax => DEFAULT_MINIMAX_MODEL,
+            // Custom endpoints have no built-in default model; pass through the
+            // descriptor placeholder when nothing is configured (#1519).
+            ApiProvider::Custom => codewhale_config::ProviderKind::Custom
+                .provider()
+                .default_model(),
         }
         .to_string()
     }
@@ -2991,7 +3093,10 @@ impl Config {
             | ApiProvider::OpenaiCodex
             | ApiProvider::Zai
             | ApiProvider::Stepfun
-            | ApiProvider::Minimax => None,
+            | ApiProvider::Minimax
+            // Custom reads its base_url from the named `[providers.<name>]`
+            // table (via provider_base), never from the legacy root field.
+            | ApiProvider::Custom => None,
         };
         let configured_base_url = provider_base.or(root_base);
         let base = if provider == ApiProvider::XiaomiMimo {
@@ -3047,6 +3152,12 @@ impl Config {
                         ApiProvider::Stepfun => DEFAULT_STEPFUN_BASE_URL,
                         ApiProvider::Anthropic => DEFAULT_ANTHROPIC_BASE_URL,
                         ApiProvider::Minimax => DEFAULT_MINIMAX_BASE_URL,
+                        // No built-in endpoint; descriptor placeholder keeps the
+                        // fallback total. A real custom route configures
+                        // `[providers.<name>] base_url` which wins above (#1519).
+                        ApiProvider::Custom => codewhale_config::ProviderKind::Custom
+                            .provider()
+                            .default_base_url(),
                     }
                     .to_string()
                 })
@@ -3127,6 +3238,23 @@ impl Config {
             return Ok(configured);
         }
 
+        // 1b. Custom providers (#1519) name their auth env var per-entry via
+        // `[providers.<name>] api_key_env = "..."`. Resolve it before the
+        // generic env step, since the custom identity declares no built-in env
+        // var. The env var NAME is read from config; the secret value is read
+        // from the process environment and never persisted.
+        if provider == ApiProvider::Custom
+            && let Some(env_name) = self
+                .provider_config_for(provider)
+                .and_then(|entry| entry.api_key_env.as_deref())
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            && let Ok(value) = std::env::var(env_name)
+            && !value.trim().is_empty()
+        {
+            return Ok(value);
+        }
+
         // 2. Environment variables. Do not query platform credential stores
         // here; routine startup and doctor checks must stay prompt-free.
         if provider == ApiProvider::XiaomiMimo {
@@ -3199,6 +3327,29 @@ impl Config {
             // Self-hosted deployments commonly run without auth on localhost.
             // Return an empty key and let the client omit the Authorization header.
             ApiProvider::Sglang | ApiProvider::Vllm | ApiProvider::Ollama => Ok(String::new()),
+            // Custom OpenAI-compatible endpoints (#1519): the key comes from the
+            // env var named by `[providers.<name>] api_key_env`. If we reached
+            // here it is unset/empty (and the endpoint is not loopback).
+            ApiProvider::Custom => {
+                let provider_name = self.provider.as_deref().unwrap_or("<name>");
+                match self
+                    .provider_config_for(provider)
+                    .and_then(|entry| entry.api_key_env.as_deref())
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                {
+                    Some(env_name) => anyhow::bail!(
+                        "Custom provider '{provider_name}' API key not found.\n\
+                         Set the environment variable {env_name} to your key, \
+                         or add api_key to [providers.{provider_name}]."
+                    ),
+                    None => anyhow::bail!(
+                        "Custom provider '{provider_name}' has no auth configured.\n\
+                         Add api_key_env = \"YOUR_ENV_VAR\" (or api_key) to \
+                         [providers.{provider_name}] in ~/.codewhale/config.toml."
+                    ),
+                }
+            }
             _ => anyhow::bail!("{}", missing_provider_api_key_message(provider)?),
         }
     }
@@ -4112,6 +4263,11 @@ fn apply_env_overrides(config: &mut Config) {
                     .minimax
                     .base_url = Some(value);
             }
+            // Custom resolves to the named `[providers.<name>]` table; route the
+            // override through the name-keyed mutable accessor (#1519).
+            ApiProvider::Custom => {
+                config.provider_config_for_mut(ApiProvider::Custom).base_url = Some(value);
+            }
         }
     }
     if matches!(config.api_provider(), ApiProvider::NvidiaNim)
@@ -4293,6 +4449,14 @@ fn apply_env_overrides(config: &mut Config) {
         config.http_headers = Some(root_headers);
 
         let provider = config.api_provider();
+        // Capture the custom entry key (the selected provider name) before the
+        // mutable borrow of `providers` below (#1519).
+        let custom_key = (provider == ApiProvider::Custom).then(|| {
+            config
+                .provider
+                .clone()
+                .unwrap_or_else(|| "__custom__".to_string())
+        });
         let providers = config
             .providers
             .get_or_insert_with(ProvidersConfig::default);
@@ -4325,6 +4489,10 @@ fn apply_env_overrides(config: &mut Config) {
             ApiProvider::Zai => &mut providers.zai,
             ApiProvider::Stepfun => &mut providers.stepfun,
             ApiProvider::Minimax => &mut providers.minimax,
+            ApiProvider::Custom => providers
+                .custom
+                .entry(custom_key.expect("custom key captured for custom provider"))
+                .or_default(),
         };
         let mut provider_headers = entry.http_headers.clone().unwrap_or_default();
         provider_headers.extend(headers);
@@ -4490,6 +4658,13 @@ fn apply_env_overrides(config: &mut Config) {
         // (issue #1714). Mirror the OPENAI_MODEL branch above for every
         // non-DeepSeek provider.
         let provider = config.api_provider();
+        // Capture the custom entry key before the mutable borrow below (#1519).
+        let custom_key = (provider == ApiProvider::Custom).then(|| {
+            config
+                .provider
+                .clone()
+                .unwrap_or_else(|| "__custom__".to_string())
+        });
         if matches!(
             provider,
             ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::DeepseekAnthropic
@@ -4505,6 +4680,10 @@ fn apply_env_overrides(config: &mut Config) {
                 | ApiProvider::DeepseekAnthropic => unreachable!(
                     "DeepSeek providers are handled in the if branch above (issue #1714)"
                 ),
+                ApiProvider::Custom => providers
+                    .custom
+                    .entry(custom_key.expect("custom key captured for custom provider"))
+                    .or_default(),
                 ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
                 ApiProvider::Openai => &mut providers.openai,
                 ApiProvider::Atlascloud => &mut providers.atlascloud,
@@ -4730,6 +4909,9 @@ pub(crate) fn provider_passes_model_through(provider: ApiProvider) -> bool {
             | ApiProvider::Qianfan
             | ApiProvider::Ollama
             | ApiProvider::Huggingface
+            // Custom OpenAI-compatible endpoints preserve user-supplied model
+            // ids verbatim (#1519); never normalize/rewrite them.
+            | ApiProvider::Custom
     )
 }
 
@@ -5226,7 +5408,26 @@ fn merge_provider_config(base: ProviderConfig, override_cfg: ProviderConfig) -> 
             .reasoning_stream_style
             .or(base.reasoning_stream_style),
         auth: override_cfg.auth.or(base.auth),
+        kind: override_cfg.kind.or(base.kind),
+        api_key_env: override_cfg.api_key_env.or(base.api_key_env),
     }
+}
+
+/// Merge the per-name custom provider maps (#1519): the union of both key sets,
+/// with each shared key deep-merged via [`merge_provider_config`] (override
+/// wins field-by-field). Keys present in only one map are carried through as-is.
+fn merge_custom_providers(
+    mut base: HashMap<String, ProviderConfig>,
+    override_cfg: HashMap<String, ProviderConfig>,
+) -> HashMap<String, ProviderConfig> {
+    for (name, entry) in override_cfg {
+        let merged = match base.remove(&name) {
+            Some(base_entry) => merge_provider_config(base_entry, entry),
+            None => entry,
+        };
+        base.insert(name, merged);
+    }
+    base
 }
 
 fn merge_providers(
@@ -5269,6 +5470,7 @@ fn merge_providers(
             zai: merge_provider_config(base.zai, override_cfg.zai),
             stepfun: merge_provider_config(base.stepfun, override_cfg.stepfun),
             minimax: merge_provider_config(base.minimax, override_cfg.minimax),
+            custom: merge_custom_providers(base.custom, override_cfg.custom),
         }),
     }
 }

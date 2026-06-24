@@ -60,7 +60,14 @@ fn prepared_route_config(
     model_selector: Option<&str>,
 ) -> Config {
     let mut route_config = config.clone();
-    route_config.provider = Some(provider.as_str().to_string());
+    // For built-in providers, stamp the canonical provider id. For the dynamic
+    // custom identity (#1519) the original `provider = "<name>"` IS the lookup
+    // key into the `[providers.<name>]` flatten map, so it must be preserved —
+    // overwriting it with the literal "custom" id would break base_url/model
+    // resolution and silently misroute.
+    if provider != ApiProvider::Custom {
+        route_config.provider = Some(provider.as_str().to_string());
+    }
     if matches!(provider, ApiProvider::NvidiaNim)
         && route_config
             .base_url
@@ -173,6 +180,80 @@ mod tests {
                 .as_ref()
                 .and_then(|providers| providers.zai.model.as_deref()),
             None
+        );
+    }
+
+    fn custom_config(base_url: &str, model: &str) -> Config {
+        let mut custom = std::collections::HashMap::new();
+        custom.insert(
+            "my_thing".to_string(),
+            ProviderConfig {
+                kind: Some("openai-compatible".to_string()),
+                base_url: Some(base_url.to_string()),
+                model: Some(model.to_string()),
+                api_key_env: Some("EXAMPLE_API_KEY".to_string()),
+                ..Default::default()
+            },
+        );
+        Config {
+            provider: Some("my_thing".to_string()),
+            providers: Some(ProvidersConfig {
+                custom,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn custom_provider_resolves_to_custom_endpoint_and_verbatim_model() {
+        use codewhale_config::route::RequestProtocol;
+
+        let config = custom_config("https://api.example.com/v1", "vendor/custom-model-v1");
+        let route = resolve_runtime_route(&config, ApiProvider::Custom, None)
+            .expect("custom provider should resolve");
+
+        // Endpoint + model come from the named table; the prefixed model id is
+        // preserved verbatim as the wire id (no provider-prefix sniffing).
+        assert_eq!(
+            route.candidate.endpoint.base_url,
+            "https://api.example.com/v1"
+        );
+        assert_eq!(
+            route.candidate.wire_model_id.as_str(),
+            "vendor/custom-model-v1"
+        );
+        assert_eq!(route.model, "vendor/custom-model-v1");
+        assert_eq!(route.candidate.protocol, RequestProtocol::ChatCompletions);
+        // HTTPS endpoint: route is valid with no insecure-http advisory.
+        assert!(route.candidate.validation.ok);
+        assert!(route.candidate.validation.messages.is_empty());
+        // The selected provider name is preserved (not overwritten with "custom").
+        assert_eq!(route.config.provider.as_deref(), Some("my_thing"));
+    }
+
+    #[test]
+    fn custom_provider_http_non_loopback_fires_insecure_advisory() {
+        let config = custom_config("http://gpu.internal.example:8000/v1", "custom-model-v1");
+        let route = resolve_runtime_route(&config, ApiProvider::Custom, None)
+            .expect("custom http provider should resolve");
+
+        // Advisory only: the route still validates (ok == true) but warns that
+        // credentials would be sent in plaintext over a non-loopback http URL.
+        assert!(route.candidate.validation.ok);
+        assert!(
+            route
+                .candidate
+                .validation
+                .messages
+                .iter()
+                .any(|message| message.contains("insecure http")),
+            "expected insecure-http advisory, got {:?}",
+            route.candidate.validation.messages
+        );
+        assert_eq!(
+            route.candidate.endpoint.base_url,
+            "http://gpu.internal.example:8000/v1"
         );
     }
 }

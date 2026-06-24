@@ -2985,7 +2985,13 @@ fn provider_metadata_defaults_match_runtime_helpers() {
             default_base_url_for_provider(kind)
         );
         assert!(!provider.display_name().trim().is_empty());
-        assert!(!provider.env_vars().is_empty());
+        // The dynamic custom provider (#1519) intentionally declares no
+        // built-in auth env var: the key env var name is supplied per entry via
+        // `[providers.<name>] api_key_env = "..."`. Every built-in provider
+        // still must declare at least one.
+        if kind != ProviderKind::Custom {
+            assert!(!provider.env_vars().is_empty());
+        }
         // OpenAI Codex (ChatGPT) speaks the Responses API and Anthropic
         // speaks the native Messages API; every other built-in provider
         // is OpenAI-compatible Chat Completions.

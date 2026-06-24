@@ -6840,3 +6840,128 @@ fn huggingface_short_env_fallbacks_configure_route() -> Result<()> {
     assert_eq!(config.default_model(), "org/short-model");
     Ok(())
 }
+
+// === #1519 custom OpenAI-compatible provider slice ===
+
+#[test]
+fn custom_provider_flatten_map_parses_alongside_named_provider() {
+    // A custom `[providers.my_thing]` table lands in the flatten map while a
+    // built-in `[providers.openai]` table still binds its named field.
+    let config: Config = toml::from_str(
+        r#"
+provider = "my_thing"
+
+[providers.openai]
+api_key = "openai-key"
+
+[providers.my_thing]
+kind = "openai-compatible"
+base_url = "https://api.example.com/v1"
+model = "custom-model-v1"
+api_key_env = "EXAMPLE_API_KEY"
+"#,
+    )
+    .expect("config with a custom provider table should parse");
+
+    let providers = config.providers.as_ref().expect("providers table present");
+    // Built-in named field still works.
+    assert_eq!(providers.openai.api_key.as_deref(), Some("openai-key"));
+    // The custom entry is captured by name in the flatten map.
+    let custom = providers
+        .custom_provider_config("my_thing")
+        .expect("custom entry parsed into flatten map");
+    assert_eq!(custom.kind.as_deref(), Some("openai-compatible"));
+    assert_eq!(
+        custom.base_url.as_deref(),
+        Some("https://api.example.com/v1")
+    );
+    assert_eq!(custom.model.as_deref(), Some("custom-model-v1"));
+    assert_eq!(custom.api_key_env.as_deref(), Some("EXAMPLE_API_KEY"));
+    assert!(custom.is_openai_compatible_custom());
+    // A built-in provider name never leaks into the custom map.
+    assert!(providers.custom_provider_config("openai").is_none());
+}
+
+#[test]
+fn api_provider_returns_custom_for_custom_name_and_deepseek_for_junk() {
+    // Names a real custom table → Custom (the #1519 silent-misroute fix).
+    let mut custom = HashMap::new();
+    custom.insert(
+        "my_thing".to_string(),
+        ProviderConfig {
+            kind: Some("openai-compatible".to_string()),
+            base_url: Some("https://api.example.com/v1".to_string()),
+            ..Default::default()
+        },
+    );
+    let config = Config {
+        provider: Some("my_thing".to_string()),
+        providers: Some(ProvidersConfig {
+            custom,
+            ..Default::default()
+        }),
+        ..Config::default()
+    };
+    assert_eq!(config.api_provider(), ApiProvider::Custom);
+
+    // Genuine junk that matches no built-in provider AND no custom table →
+    // falls back to DeepSeek, exactly as before this slice.
+    let junk = Config {
+        provider: Some("totally-not-a-provider".to_string()),
+        ..Config::default()
+    };
+    assert_eq!(junk.api_provider(), ApiProvider::Deepseek);
+}
+
+#[test]
+fn custom_provider_kind_only_accepts_openai_compatible() {
+    let ok = ProviderConfig {
+        kind: Some("openai-compatible".to_string()),
+        ..Default::default()
+    };
+    assert!(ok.is_openai_compatible_custom());
+
+    // Underscore spelling and case are tolerated.
+    let underscore = ProviderConfig {
+        kind: Some("OpenAI_Compatible".to_string()),
+        ..Default::default()
+    };
+    assert!(underscore.is_openai_compatible_custom());
+
+    // Any other declared wire format is rejected (callers error on these).
+    let other = ProviderConfig {
+        kind: Some("anthropic-messages".to_string()),
+        ..Default::default()
+    };
+    assert!(!other.is_openai_compatible_custom());
+
+    // Built-in providers leave `kind` unset.
+    assert!(!ProviderConfig::default().is_openai_compatible_custom());
+}
+
+#[test]
+fn custom_provider_base_url_and_model_resolve_from_named_table() {
+    let mut custom = HashMap::new();
+    custom.insert(
+        "my_thing".to_string(),
+        ProviderConfig {
+            kind: Some("openai-compatible".to_string()),
+            base_url: Some("https://api.example.com/v1".to_string()),
+            model: Some("custom-model-v1".to_string()),
+            ..Default::default()
+        },
+    );
+    let config = Config {
+        provider: Some("my_thing".to_string()),
+        providers: Some(ProvidersConfig {
+            custom,
+            ..Default::default()
+        }),
+        ..Config::default()
+    };
+
+    // Resolution reads the named table, not a DeepSeek default.
+    assert_eq!(config.api_provider(), ApiProvider::Custom);
+    assert_eq!(config.deepseek_base_url(), "https://api.example.com/v1");
+    assert_eq!(config.default_model(), "custom-model-v1");
+}
