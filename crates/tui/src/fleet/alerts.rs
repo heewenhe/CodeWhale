@@ -716,6 +716,7 @@ mod tests {
                 max: Some(1.0),
                 notes: Some("regex scorer could not be compiled".to_string()),
             }),
+            resolved_route: None,
         };
 
         let alert = FleetAlertEvent::verifier_failed(&receipt).unwrap();

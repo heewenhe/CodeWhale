@@ -898,12 +898,17 @@ impl FleetManager {
             &task.entry.task_id,
             &task.worker_id,
         )?;
+        // Mint the resolved-route snapshot once (#3154) so every receipt path —
+        // verification and the simulated/transport fallback below — persists the
+        // same honest, secret-free route detail.
+        let resolved_route = self.resolve_task_route(&task.task_spec);
         let verification_input = FleetTaskVerificationInput {
             run_id: task.entry.run_id.clone(),
             task_id: task.entry.task_id.clone(),
             worker_id: task.worker_id.clone(),
             exit_code,
             artifacts,
+            resolved_route,
         };
         if task.task_spec.scorer.is_some() {
             let verification =
@@ -948,8 +953,22 @@ impl FleetManager {
             failure_kind,
             artifacts: verification_input.artifacts,
             score: None,
+            resolved_route: verification_input.resolved_route,
         })?;
         Ok(true)
+    }
+
+    /// Resolve the route snapshot to persist on a task's receipt (#3154).
+    ///
+    /// Loads workspace agent profiles so role/loadout intent composes the same
+    /// way as the worker-spec path, then mints a secret-free route candidate via
+    /// the hermetic resolver bridge. Returns `None` (never a fabricated route)
+    /// when profiles or resolution are unavailable.
+    fn resolve_task_route(&self, task_spec: &FleetTaskSpec) -> Option<FleetResolvedRoute> {
+        let agent_profiles = super::profile::load_workspace_agent_profiles(&self.workspace)
+            .ok()
+            .unwrap_or_default();
+        worker_runtime::resolve_fleet_route(task_spec, &agent_profiles)
     }
 
     fn task_artifacts_for_receipt(
@@ -1662,6 +1681,7 @@ mod tests {
                     failure_kind: None,
                     artifacts: Vec::new(),
                     score: None,
+                    resolved_route: None,
                 })
                 .unwrap();
         }
@@ -2338,6 +2358,55 @@ esac
             ])
         );
         assert_eq!(state.receipts.len(), 10);
+
+        // #3166 scope #10: every receipt persists a resolved-route snapshot
+        // (#3154) with non-empty provider/wire-model, a role, and the resolver
+        // source — and the serialized receipt leaks no credential material.
+        for (key, receipt) in &state.receipts {
+            let route = receipt
+                .resolved_route
+                .as_ref()
+                .unwrap_or_else(|| panic!("receipt {key} should carry a resolved route"));
+            assert!(
+                !route.provider_id.is_empty(),
+                "receipt {key} resolved-route provider_id must be non-empty"
+            );
+            assert!(
+                !route.wire_model_id.is_empty(),
+                "receipt {key} resolved-route wire_model_id must be non-empty"
+            );
+            assert!(
+                route.role.as_deref().is_some_and(|role| !role.is_empty()),
+                "receipt {key} resolved-route should record a role"
+            );
+            assert_eq!(
+                route.source, "resolver",
+                "receipt {key} resolved-route source must be the resolver"
+            );
+
+            let receipt_json = serde_json::to_string(receipt).unwrap();
+            let haystack = receipt_json.to_ascii_lowercase();
+            for needle in [
+                "api_key",
+                "apikey",
+                "api-key",
+                "authorization",
+                "bearer ",
+                "auth_token",
+                "auth-token",
+                "password",
+                "credential",
+                "sk-ant-",
+                "sk-proj-",
+                "sk-or-",
+                "secret",
+            ] {
+                assert!(
+                    !haystack.contains(needle),
+                    "receipt {key} JSON must not contain secret marker {needle:?}: {receipt_json}"
+                );
+            }
+        }
 
         let failed_receipt = &state.receipts[&format!("{}:verifier-4-fail", report.run_id.0)];
         assert_eq!(failed_receipt.result, FleetTaskResult::Fail);

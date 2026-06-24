@@ -74,6 +74,8 @@ pub struct FleetTaskVerificationInput {
     pub worker_id: String,
     pub exit_code: Option<i32>,
     pub artifacts: Vec<FleetArtifactRef>,
+    /// Resolved-route snapshot to persist on the receipt (#3154).
+    pub resolved_route: Option<FleetResolvedRoute>,
 }
 
 #[derive(Debug, Clone)]
@@ -299,6 +301,7 @@ pub fn record_verification_receipt(
         failure_kind: verification.failure_kind,
         artifacts,
         score: Some(verification.score),
+        resolved_route: input.resolved_route.clone(),
     };
     ledger.record_receipt(receipt.clone())?;
     Ok(receipt)
@@ -796,6 +799,7 @@ mod tests {
             worker_id: "worker-1".to_string(),
             exit_code: Some(0),
             artifacts: vec![],
+            resolved_route: None,
         };
 
         let pass = verify_task_result(
@@ -902,6 +906,7 @@ mod tests {
             worker_id: "worker-1".to_string(),
             exit_code: Some(1),
             artifacts: vec![log],
+            resolved_route: None,
         };
         let verification = verify_task_result(
             tmp.path(),

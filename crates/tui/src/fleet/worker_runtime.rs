@@ -15,11 +15,14 @@
 
 use anyhow::{Result, bail};
 use codewhale_protocol::fleet::{
-    FleetHostSpec, FleetTaskSpec, FleetTaskWorkerProfile, FleetWorkerEventPayload, FleetWorkerSpec,
+    FleetHostSpec, FleetResolvedRoute, FleetTaskSpec, FleetTaskWorkerProfile,
+    FleetWorkerEventPayload, FleetWorkerSpec,
 };
 
 use super::host::FleetHostKind;
 use super::profile::AgentProfile;
+use crate::config::ApiProvider;
+use crate::route_runtime::resolve_route_candidate;
 use crate::tools::subagent::{
     AgentWorkerSpec, AgentWorkerStatus, AgentWorkerToolProfile, SubAgentType,
 };
@@ -170,6 +173,82 @@ pub fn fleet_task_to_worker_spec_with_profiles(
         spawn_depth: 0,
         max_spawn_depth: runtime_profile.max_spawn_depth,
     })
+}
+
+/// Mint a [`FleetResolvedRoute`] snapshot for a fleet task (#3154).
+///
+/// This calls the existing hermetic resolver bridge
+/// ([`resolve_route_candidate`]) so the persisted route reflects the same
+/// resolution semantics the runtime would use, then records only non-sensitive
+/// shape (provider id/kind, model ids, protocol) combined with the already
+/// computed effective role/loadout intent. `source` is `"resolver"`.
+///
+/// Honesty rules:
+/// - `canonical_model` stays `None` when the resolver could not pin one.
+/// - The provider comes from the resolver default (the worker profile carries
+///   no provider authority); a task-level `model` selector is forwarded as the
+///   model selector. No reasoning/pricing fields are fabricated.
+///
+/// Returns `None` (never a fabricated route) when resolution fails, so callers
+/// degrade gracefully without inventing detail.
+pub(crate) fn resolve_fleet_route(
+    task_spec: &FleetTaskSpec,
+    agent_profiles: &[AgentProfile],
+) -> Option<FleetResolvedRoute> {
+    let agent_profile = resolve_task_agent_profile(task_spec, agent_profiles)
+        .ok()
+        .flatten();
+    let worker_profile = task_spec.worker.as_ref();
+    let role = effective_fleet_role(worker_profile, agent_profile);
+    let loadout = effective_fleet_loadout(worker_profile, agent_profile);
+
+    // A task-level explicit model is the only model selector the spec carries
+    // with provider-resolution intent; otherwise let the resolver pick the
+    // provider default. Provider authority belongs to route resolution, so we
+    // do not infer a provider here.
+    let model_selector = worker_profile
+        .and_then(|worker| worker.model.as_deref())
+        .map(str::trim)
+        .filter(|model| !model.is_empty() && *model != "auto");
+
+    // The worker profile carries no provider authority, so resolve within the
+    // default provider scope (mirrors `ProviderKind::default()`). The resolver
+    // is fully offline/hermetic and never reads secrets, env, or config.
+    let candidate =
+        resolve_route_candidate(ApiProvider::Deepseek, model_selector, None, None).ok()?;
+
+    Some(FleetResolvedRoute {
+        provider_id: candidate.provider_id.as_str().to_string(),
+        provider_kind: candidate.provider_kind.as_str().to_string(),
+        canonical_model: candidate
+            .canonical_model
+            .as_ref()
+            .map(|model| model.as_str().to_string()),
+        wire_model_id: candidate.wire_model_id.as_str().to_string(),
+        protocol: route_protocol_label(candidate.protocol).to_string(),
+        role,
+        loadout: loadout_intent_label(&loadout),
+        source: "resolver".to_string(),
+    })
+}
+
+/// Plain-string label for a resolved wire protocol (no config type leaks).
+fn route_protocol_label(protocol: codewhale_config::route::RequestProtocol) -> &'static str {
+    use codewhale_config::route::RequestProtocol;
+    match protocol {
+        RequestProtocol::ChatCompletions => "chat_completions",
+        RequestProtocol::Responses => "responses",
+        RequestProtocol::AnthropicMessages => "anthropic_messages",
+    }
+}
+
+/// Collapse an `inherit` (no-op) loadout to `None` for the receipt.
+fn loadout_intent_label(loadout: &codewhale_config::FleetLoadout) -> Option<String> {
+    if *loadout == codewhale_config::FleetLoadout::Inherit {
+        None
+    } else {
+        Some(loadout.as_str().to_string())
+    }
 }
 
 pub(crate) fn fleet_task_prompt(task_spec: &FleetTaskSpec) -> String {
@@ -662,6 +741,75 @@ mod tests {
             fleet_role_to_agent_type(Some("nonexistent-role")),
             SubAgentType::General
         );
+    }
+
+    #[test]
+    fn resolve_fleet_route_mints_secret_free_snapshot_from_resolver() {
+        let task = fleet_task(
+            "route-1",
+            Some(worker_profile(
+                None,
+                Some("builder"),
+                Some("fast"),
+                None,
+                None,
+                vec!["read_file"],
+            )),
+        );
+        let route = resolve_fleet_route(&task, &[]).expect("default route should resolve offline");
+
+        // Honest, non-empty route shape from the resolver.
+        assert!(!route.provider_id.is_empty());
+        assert!(!route.provider_kind.is_empty());
+        assert!(!route.wire_model_id.is_empty());
+        assert_eq!(route.protocol, "chat_completions");
+        assert_eq!(route.role.as_deref(), Some("builder"));
+        assert_eq!(route.loadout.as_deref(), Some("fast"));
+        assert_eq!(route.source, "resolver");
+
+        // No-secrets: the serialized snapshot carries no credential markers.
+        let json = serde_json::to_string(&route).unwrap();
+        let haystack = json.to_ascii_lowercase();
+        for needle in [
+            "api_key",
+            "apikey",
+            "api-key",
+            "authorization",
+            "bearer ",
+            "auth_token",
+            "auth-token",
+            "password",
+            "credential",
+            "sk-ant-",
+            "sk-proj-",
+            "sk-or-",
+            "secret",
+        ] {
+            assert!(
+                !haystack.contains(needle),
+                "resolved-route JSON must not contain secret marker {needle:?}: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_fleet_route_omits_inherit_loadout() {
+        // No loadout/model_class intent → `inherit` collapses to None, never an
+        // "inherit" string on the receipt.
+        let task = fleet_task(
+            "route-2",
+            Some(worker_profile(
+                None,
+                Some("scout"),
+                None,
+                None,
+                None,
+                vec!["read_file"],
+            )),
+        );
+        let route = resolve_fleet_route(&task, &[]).expect("route should resolve");
+        assert_eq!(route.role.as_deref(), Some("scout"));
+        assert!(route.loadout.is_none());
     }
 
     #[test]
