@@ -141,13 +141,13 @@ if [[ -n "${previous_tag}" ]]; then
 fi
 
 # 7) Security contact guard.
-security_email="security@codewhale.net"
+security_email="hmbown@gmail.com"
 if ! grep -qF "${security_email}" SECURITY.md; then
   echo "::error::SECURITY.md must list ${security_email} as the security contact." >&2
   fail=1
 fi
 if grep -qF "hmbown.dev@gmail.com" SECURITY.md; then
-  echo "::error::SECURITY.md must not use the personal fallback email; use ${security_email}." >&2
+  echo "::error::SECURITY.md must not use the alternate personal fallback email; use ${security_email}." >&2
   fail=1
 fi
 

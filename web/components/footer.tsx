@@ -143,7 +143,7 @@ export function Footer({ locale = "en" }: { locale?: Locale }) {
         <div className="mx-auto max-w-[1400px] px-6 py-4 flex flex-col gap-2 text-[0.78rem] text-ink-soft">
           <div>
             {isZh ? "安全报告、负责任披露、漏洞协调 — " : "For security reports, responsible disclosure, or vulnerability coordination — "}
-            <a href="mailto:security@codewhale.net" className="font-mono text-ink hover:text-indigo">security@codewhale.net</a>
+            <a href="mailto:hmbown@gmail.com" className="font-mono text-ink hover:text-indigo">hmbown@gmail.com</a>
           </div>
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 font-mono text-[0.7rem] text-ink-mute uppercase tracking-widest">
             <span>© {new Date().getFullYear()} · CodeWhale · Hmbown</span>
