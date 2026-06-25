@@ -61,7 +61,9 @@ use crate::worker_profile::ModelRoute;
 use crate::working_set::WorkingSet;
 
 use super::events::{Event, TurnOutcomeStatus};
-use super::ops::{Op, SessionSnapshot, USER_SHELL_TOOL_ID_PREFIX, UserInputProvenance};
+use super::ops::{
+    Op, ProviderRuntimeStatus, SessionSnapshot, USER_SHELL_TOOL_ID_PREFIX, UserInputProvenance,
+};
 use super::session::Session;
 use super::tool_parser;
 use super::turn::{TurnContext, post_turn_snapshot, pre_turn_snapshot};
@@ -1625,6 +1627,28 @@ impl Engine {
                         };
                         if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
                             let _ = tx.send(snapshot);
+                        }
+                    }
+                    Op::GetProviderRuntimeStatus { tx } => {
+                        let status = if let Some(client) = self.deepseek_client.as_ref() {
+                            ProviderRuntimeStatus {
+                                provider: client.api_provider(),
+                                request_concurrency_limit: client
+                                    .provider_request_concurrency_limit(),
+                                active_provider_requests: client.active_provider_requests(),
+                            }
+                        } else {
+                            let provider = self.api_config.api_provider();
+                            ProviderRuntimeStatus {
+                                provider,
+                                request_concurrency_limit: self
+                                    .api_config
+                                    .provider_max_concurrency(provider),
+                                active_provider_requests: 0,
+                            }
+                        };
+                        if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
+                            let _ = tx.send(status);
                         }
                     }
                     Op::PurgeContext => {

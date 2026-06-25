@@ -27,6 +27,15 @@ pub struct SessionSnapshot {
     pub mode: String,
 }
 
+/// Provider request runtime state surfaced by `/provider`.
+/// Returned by `Op::GetProviderRuntimeStatus` via a oneshot channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderRuntimeStatus {
+    pub provider: ApiProvider,
+    pub request_concurrency_limit: Option<usize>,
+    pub active_provider_requests: usize,
+}
+
 /// Origin of text being introduced as a user-role turn.
 ///
 /// Chat providers force several runtime/control-plane signals through
@@ -194,6 +203,13 @@ pub enum Op {
     /// the caller doesn't have to compete with the SSE event stream.
     GetSessionSnapshot {
         tx: std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<SessionSnapshot>>>>,
+    },
+
+    /// Get active provider request concurrency state for readiness surfaces.
+    GetProviderRuntimeStatus {
+        tx: std::sync::Arc<
+            std::sync::Mutex<Option<tokio::sync::oneshot::Sender<ProviderRuntimeStatus>>>,
+        >,
     },
 
     /// Run agent-driven context purging.

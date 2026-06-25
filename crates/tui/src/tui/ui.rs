@@ -55,7 +55,7 @@ use crate::config::{
 use crate::config_ui::{self, ConfigUiMode, WebConfigSession, WebConfigSessionEvent};
 use crate::core::engine::{EngineConfig, EngineHandle, spawn_engine};
 use crate::core::events::Event as EngineEvent;
-use crate::core::ops::{Op, USER_SHELL_TOOL_ID_PREFIX};
+use crate::core::ops::{Op, ProviderRuntimeStatus, USER_SHELL_TOOL_ID_PREFIX};
 use crate::hooks::{HookEvent, HookExecutor, TurnEndPayloadInput, TurnEndTotals};
 use crate::llm_client::LlmClient;
 use crate::localization::{MessageId, tr};
@@ -6980,6 +6980,18 @@ fn provider_picker_model_override(app: &App, provider: ApiProvider) -> Option<St
     (app.api_provider == provider).then(|| app.model.clone())
 }
 
+async fn query_provider_runtime_status(
+    engine_handle: &EngineHandle,
+) -> Option<ProviderRuntimeStatus> {
+    tokio::time::timeout(
+        Duration::from_millis(100),
+        engine_handle.get_provider_runtime_status(),
+    )
+    .await
+    .ok()
+    .and_then(|result| result.ok())
+}
+
 fn open_text_pager(app: &mut App, title: String, content: String) {
     let width = app
         .viewport
@@ -7313,11 +7325,14 @@ async fn apply_command_result(
             }
             AppAction::OpenProviderPicker => {
                 if app.view_stack.top_kind() != Some(ModalKind::ProviderPicker) {
-                    app.view_stack
-                        .push(crate::tui::provider_picker::ProviderPickerView::new(
+                    let runtime_status = query_provider_runtime_status(engine_handle).await;
+                    app.view_stack.push(
+                        crate::tui::provider_picker::ProviderPickerView::new_with_runtime_status(
                             app.api_provider,
                             config,
-                        ));
+                            runtime_status,
+                        ),
+                    );
                 }
             }
             AppAction::OpenModePicker => {

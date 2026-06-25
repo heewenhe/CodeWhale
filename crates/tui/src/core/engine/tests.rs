@@ -4,7 +4,7 @@ use super::context::{COMPACTION_SUMMARY_MARKER, TURN_MAX_OUTPUT_TOKENS};
 use super::turn_loop::registered_tool_approval_required;
 use crate::config::ApiProvider;
 use crate::models::SystemBlock;
-use crate::test_support::lock_test_env;
+use crate::test_support::{EnvVarGuard, lock_test_env};
 use crate::tools::plan::{PlanItemArg, PlanSnapshot, StepStatus};
 use crate::tools::spec::ToolCapability;
 use crate::tools::todo::{TodoItem, TodoListSnapshot, TodoStatus};
@@ -3232,6 +3232,35 @@ async fn edit_last_turn_preserves_current_mode() {
         .expect("snapshot");
 
     assert_eq!(snapshot.mode, "plan");
+
+    run.abort();
+}
+
+#[tokio::test]
+async fn provider_runtime_status_reports_configured_zai_cap_without_client() {
+    let (engine, handle) = {
+        let _lock = lock_test_env();
+        let _zai_key = EnvVarGuard::remove("ZAI_API_KEY");
+        let _zai_alt_key = EnvVarGuard::remove("Z_AI_API_KEY");
+        let api_config = Config {
+            provider: Some("zai".to_string()),
+            ..Config::default()
+        };
+        Engine::new(EngineConfig::default(), &api_config)
+    };
+
+    let run = tokio::spawn(engine.run());
+    let status = tokio::time::timeout(Duration::from_secs(2), handle.get_provider_runtime_status())
+        .await
+        .expect("provider runtime status response")
+        .expect("provider runtime status");
+
+    assert_eq!(status.provider, ApiProvider::Zai);
+    assert_eq!(
+        status.request_concurrency_limit,
+        Some(crate::config::DEFAULT_ZAI_PROVIDER_MAX_CONCURRENCY)
+    );
+    assert_eq!(status.active_provider_requests, 0);
 
     run.abort();
 }

@@ -27,6 +27,7 @@ use ratatui::{
 };
 
 use crate::config::{ApiProvider, Config, has_api_key_for, kimi_cli_credentials_present};
+use crate::core::ops::ProviderRuntimeStatus;
 use crate::model_profile::{SupportState, resolved_capability_profile};
 use crate::palette;
 use crate::tui::app::ReasoningEffort;
@@ -64,6 +65,7 @@ pub struct ProviderDashboardRow {
     pub supported_protocols: Vec<String>,
     pub available_model_count: usize,
     pub default_route: ProviderDefaultRoute,
+    pub request_concurrency: ProviderRequestConcurrencySummary,
     pub usage_meter: String,
     pub reasoning: ProviderReasoningSummary,
     pub capabilities: ProviderCapabilityBadges,
@@ -97,6 +99,12 @@ pub enum ProviderCatalogStatus {
 pub struct ProviderDefaultRoute {
     pub logical_model: String,
     pub wire_model: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderRequestConcurrencySummary {
+    pub limit: Option<usize>,
+    pub active: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,14 +273,35 @@ pub enum ProviderReasoningStreamVisibility {
 }
 
 impl ProviderDashboardRow {
+    #[cfg(test)]
     fn from_config(provider: ApiProvider, active: ApiProvider, config: &Config) -> Self {
-        Self::from_config_with_provider_id(provider, active, config, None)
+        Self::from_config_with_runtime_status(provider, active, config, None)
     }
 
-    fn from_custom_config(provider_id: &str, active: ApiProvider, config: &Config) -> Self {
+    fn from_config_with_runtime_status(
+        provider: ApiProvider,
+        active: ApiProvider,
+        config: &Config,
+        runtime_status: Option<&ProviderRuntimeStatus>,
+    ) -> Self {
+        Self::from_config_with_provider_id(provider, active, config, None, runtime_status)
+    }
+
+    fn from_custom_config_with_runtime_status(
+        provider_id: &str,
+        active: ApiProvider,
+        config: &Config,
+        runtime_status: Option<&ProviderRuntimeStatus>,
+    ) -> Self {
         let mut scoped = config.clone();
         scoped.provider = Some(provider_id.to_string());
-        Self::from_config_with_provider_id(ApiProvider::Custom, active, &scoped, Some(provider_id))
+        Self::from_config_with_provider_id(
+            ApiProvider::Custom,
+            active,
+            &scoped,
+            Some(provider_id),
+            runtime_status,
+        )
     }
 
     fn from_config_with_provider_id(
@@ -280,6 +309,7 @@ impl ProviderDashboardRow {
         active: ApiProvider,
         config: &Config,
         provider_id_override: Option<&str>,
+        runtime_status: Option<&ProviderRuntimeStatus>,
     ) -> Self {
         let configured = config.provider_config_for(provider);
         let configured_base_url = configured
@@ -316,6 +346,8 @@ impl ProviderDashboardRow {
         } else {
             provider == active
         };
+        let request_concurrency =
+            ProviderRequestConcurrencySummary::for_row(provider, config, runtime_status, is_active);
 
         let Some(kind) = provider.kind() else {
             return Self {
@@ -334,6 +366,7 @@ impl ProviderDashboardRow {
                         .unwrap_or_else(|| "deepseek-v4-pro".to_string()),
                     wire_model: "legacy alias".to_string(),
                 },
+                request_concurrency,
                 usage_meter,
                 reasoning: ProviderReasoningSummary::unknown(provider, config),
                 capabilities: ProviderCapabilityBadges::unknown(),
@@ -435,6 +468,7 @@ impl ProviderDashboardRow {
             supported_protocols,
             available_model_count,
             default_route,
+            request_concurrency,
             usage_meter: resolved_pricing,
             reasoning,
             capabilities,
@@ -458,8 +492,13 @@ impl ProviderDashboardRow {
         } else {
             ""
         };
+        let request_concurrency = self
+            .request_concurrency
+            .label()
+            .map(|label| format!(" | {label}"))
+            .unwrap_or_default();
         format!(
-            "{} | auth:{} | {} | {} | base:{}{} | route:{}{} origin:{} | {} | {} | catalog:{}{}",
+            "{} | auth:{} | {} | {} | base:{}{} | route:{}{} origin:{} | {} | {}{} | catalog:{}{}",
             self.readiness.label(),
             self.auth_status.label(),
             self.usage_meter,
@@ -471,6 +510,7 @@ impl ProviderDashboardRow {
             self.model_origin.label(),
             self.capabilities.label(),
             self.reasoning.label(),
+            request_concurrency,
             self.catalog_label(),
             // Only experimental integrations add a tag; supported ones stay
             // noise-free (#2984).
@@ -486,6 +526,37 @@ impl ProviderDashboardRow {
             ProviderCatalogStatus::Bundled => format!("{} bundled", self.available_model_count),
             ProviderCatalogStatus::DefaultOnly => "default-only".to_string(),
             ProviderCatalogStatus::Legacy => "legacy".to_string(),
+        }
+    }
+}
+
+impl ProviderRequestConcurrencySummary {
+    fn for_row(
+        provider: ApiProvider,
+        config: &Config,
+        runtime_status: Option<&ProviderRuntimeStatus>,
+        is_active: bool,
+    ) -> Self {
+        let mut summary = Self {
+            limit: config.provider_max_concurrency(provider),
+            active: None,
+        };
+        if is_active
+            && let Some(status) = runtime_status
+            && status.provider == provider
+        {
+            summary.limit = status.request_concurrency_limit;
+            summary.active = Some(status.active_provider_requests);
+        }
+        summary
+    }
+
+    fn label(self) -> Option<String> {
+        match (self.limit, self.active) {
+            (Some(limit), Some(active)) => Some(format!("req:{active}/{limit}")),
+            (Some(limit), None) => Some(format!("req:cap {limit}")),
+            (None, Some(active)) if active > 0 => Some(format!("req:{active}/uncapped")),
+            _ => None,
         }
     }
 }
@@ -975,16 +1046,34 @@ fn compact_base_url(base_url: &str) -> String {
 }
 
 impl ProviderPickerView {
+    #[cfg(test)]
     #[must_use]
     pub fn new(active: ApiProvider, config: &Config) -> Self {
+        Self::new_with_runtime_status(active, config, None)
+    }
+
+    #[must_use]
+    pub fn new_with_runtime_status(
+        active: ApiProvider,
+        config: &Config,
+        runtime_status: Option<ProviderRuntimeStatus>,
+    ) -> Self {
         // Present providers in the shared metadata display order (#3076). The
         // active provider is highlighted via `selected_idx` below, so it is
         // never lost in the list.
-        let custom_rows = custom_provider_dashboard_rows(active, config);
+        let runtime_status = runtime_status.as_ref();
+        let custom_rows = custom_provider_dashboard_rows(active, config, runtime_status);
         let mut rows: Vec<ProviderDashboardRow> = ApiProvider::sorted_for_display()
             .into_iter()
             .filter(|provider| *provider != ApiProvider::Custom || custom_rows.is_empty())
-            .map(|p| ProviderDashboardRow::from_config(p, active, config))
+            .map(|p| {
+                ProviderDashboardRow::from_config_with_runtime_status(
+                    p,
+                    active,
+                    config,
+                    runtime_status,
+                )
+            })
             .collect();
         rows.extend(custom_rows);
         rows.sort_by(|a, b| {
@@ -1424,6 +1513,7 @@ impl ModalView for ProviderPickerView {
 fn custom_provider_dashboard_rows(
     active: ApiProvider,
     config: &Config,
+    runtime_status: Option<&ProviderRuntimeStatus>,
 ) -> Vec<ProviderDashboardRow> {
     let Some(providers) = config.providers.as_ref() else {
         return Vec::new();
@@ -1436,7 +1526,14 @@ fn custom_provider_dashboard_rows(
                 .custom_provider_config(id)
                 .is_some_and(|entry| entry.is_openai_compatible_custom())
         })
-        .map(|id| ProviderDashboardRow::from_custom_config(&id, active, config))
+        .map(|id| {
+            ProviderDashboardRow::from_custom_config_with_runtime_status(
+                &id,
+                active,
+                config,
+                runtime_status,
+            )
+        })
         .collect()
 }
 
@@ -1678,6 +1775,53 @@ mod tests {
         assert_eq!(row.reasoning.selected_control.as_deref(), Some("max"));
         assert!(row.compact_hint().contains("reasoning:high/max"));
         assert!(row.compact_hint().contains("stream:structured"));
+    }
+
+    #[test]
+    fn provider_dashboard_row_surfaces_zai_concurrency_cap() {
+        let config = Config::default();
+        let row =
+            ProviderDashboardRow::from_config(ApiProvider::Zai, ApiProvider::Deepseek, &config);
+
+        assert_eq!(
+            row.request_concurrency.limit,
+            Some(crate::config::DEFAULT_ZAI_PROVIDER_MAX_CONCURRENCY)
+        );
+        assert_eq!(row.request_concurrency.active, None);
+        assert!(
+            row.compact_hint().contains("req:cap 3"),
+            "Z.ai's effective default cap must surface in /provider, got {:?}",
+            row.compact_hint()
+        );
+    }
+
+    #[test]
+    fn provider_dashboard_row_surfaces_active_provider_requests() {
+        let config = Config::default();
+        let runtime_status = ProviderRuntimeStatus {
+            provider: ApiProvider::Zai,
+            request_concurrency_limit: Some(crate::config::DEFAULT_ZAI_PROVIDER_MAX_CONCURRENCY),
+            active_provider_requests: 2,
+        };
+        let mut picker = ProviderPickerView::new_with_runtime_status(
+            ApiProvider::Zai,
+            &config,
+            Some(runtime_status),
+        );
+
+        move_to_provider(&mut picker, ApiProvider::Zai);
+        let row = &picker.rows[picker.selected_idx];
+
+        assert_eq!(
+            row.request_concurrency.limit,
+            Some(crate::config::DEFAULT_ZAI_PROVIDER_MAX_CONCURRENCY)
+        );
+        assert_eq!(row.request_concurrency.active, Some(2));
+        assert!(
+            row.compact_hint().contains("req:2/3"),
+            "active runtime concurrency must surface in /provider, got {:?}",
+            row.compact_hint()
+        );
     }
 
     #[test]

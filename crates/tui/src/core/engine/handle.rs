@@ -139,4 +139,15 @@ impl EngineHandle {
         rx.await
             .map_err(|_| anyhow::anyhow!("Engine dropped session snapshot oneshot"))
     }
+
+    /// Request active provider request concurrency state.
+    pub async fn get_provider_runtime_status(
+        &self,
+    ) -> Result<crate::core::ops::ProviderRuntimeStatus> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+        self.send(Op::GetProviderRuntimeStatus { tx }).await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("Engine dropped provider runtime status oneshot"))
+    }
 }
