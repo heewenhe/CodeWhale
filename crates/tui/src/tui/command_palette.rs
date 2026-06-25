@@ -22,7 +22,7 @@ use crate::tools::{ToolContext, ToolRegistryBuilder};
 use crate::tui::views::{CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum PaletteSection {
+pub enum PaletteSection {
     Action,
     Command,
     Skill,
@@ -38,6 +38,14 @@ pub struct CommandPaletteEntry {
     pub command: String,
     pub action: CommandPaletteAction,
     show_on_empty_query: bool,
+}
+
+#[cfg(test)]
+impl CommandPaletteEntry {
+    #[must_use]
+    pub fn section(&self) -> PaletteSection {
+        self.section
+    }
 }
 
 pub struct CommandPaletteView {

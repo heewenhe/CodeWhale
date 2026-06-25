@@ -182,6 +182,69 @@ impl Default for HotbarRecommendationOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotbarSourceDispatchBoundary {
+    /// The action is handled directly by existing in-app state mutation.
+    DirectApp,
+    /// The action routes through the slash command registry/dispatcher.
+    SlashCommand,
+    /// The source is visible as a future hotbar source, but binding/dispatch is
+    /// intentionally deferred until its safety contract is wired.
+    Deferred,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HotbarSourceDescriptor {
+    pub category: HotbarActionCategory,
+    pub boundary: HotbarSourceDispatchBoundary,
+    pub dispatch_path: &'static str,
+    pub status: &'static str,
+}
+
+const HOTBAR_SOURCE_DESCRIPTORS: &[HotbarSourceDescriptor] = &[
+    HotbarSourceDescriptor {
+        category: HotbarActionCategory::App,
+        boundary: HotbarSourceDispatchBoundary::DirectApp,
+        dispatch_path: "AppHotbarAction::dispatch",
+        status: "dispatchable",
+    },
+    HotbarSourceDescriptor {
+        category: HotbarActionCategory::Slash,
+        boundary: HotbarSourceDispatchBoundary::SlashCommand,
+        dispatch_path: "commands::execute or composer prefill for required arguments",
+        status: "dispatchable",
+    },
+    HotbarSourceDescriptor {
+        category: HotbarActionCategory::Mcp,
+        boundary: HotbarSourceDispatchBoundary::Deferred,
+        dispatch_path: "command palette / MCP manager until tool args and approvals are wired",
+        status: "exploratory",
+    },
+    HotbarSourceDescriptor {
+        category: HotbarActionCategory::Skill,
+        boundary: HotbarSourceDispatchBoundary::Deferred,
+        dispatch_path: "command palette / skill command until activation receipts are wired",
+        status: "exploratory",
+    },
+    HotbarSourceDescriptor {
+        category: HotbarActionCategory::Plugin,
+        boundary: HotbarSourceDispatchBoundary::Deferred,
+        dispatch_path: "plugin command/tool registry until plugin approval gates are wired",
+        status: "exploratory",
+    },
+];
+
+#[must_use]
+pub const fn hotbar_source_descriptors() -> &'static [HotbarSourceDescriptor] {
+    HOTBAR_SOURCE_DESCRIPTORS
+}
+
+/// Adapter for one source of bindable hotbar actions.
+pub trait HotbarActionSource {
+    fn descriptor(&self) -> HotbarSourceDescriptor;
+    fn register_actions(&self, registry: &mut HotbarActionRegistry);
+}
+
 /// Uniform interface for actions that can be bound to a hotbar slot.
 #[allow(dead_code)]
 pub trait HotbarAction: Send + Sync {
@@ -335,71 +398,105 @@ impl HotbarActionRegistry {
         );
     }
 
+    pub fn register_source(&mut self, source: &dyn HotbarActionSource) {
+        let descriptor = source.descriptor();
+        debug_assert!(
+            hotbar_source_descriptors()
+                .iter()
+                .any(|registered| registered.category == descriptor.category
+                    && registered.boundary == descriptor.boundary),
+            "hotbar source descriptor must be registered: {descriptor:?}"
+        );
+        debug_assert!(!descriptor.dispatch_path.trim().is_empty());
+        debug_assert!(!descriptor.status.trim().is_empty());
+        source.register_actions(self);
+    }
+
     pub(crate) fn register_builtins(&mut self) {
-        self.register(AppHotbarAction::new(
+        self.register_source(&BuiltinHotbarActionSource);
+    }
+
+    pub(crate) fn register_slash_commands(&mut self) {
+        self.register_source(&SlashCommandHotbarActionSource);
+    }
+}
+
+struct BuiltinHotbarActionSource;
+
+impl HotbarActionSource for BuiltinHotbarActionSource {
+    fn descriptor(&self) -> HotbarSourceDescriptor {
+        HOTBAR_SOURCE_DESCRIPTORS
+            .iter()
+            .copied()
+            .find(|descriptor| descriptor.category == HotbarActionCategory::App)
+            .expect("app hotbar source descriptor exists")
+    }
+
+    fn register_actions(&self, registry: &mut HotbarActionRegistry) {
+        registry.register(AppHotbarAction::new(
             "voice.toggle",
             "voice",
             "Voice input",
             "Toggle voice capture from the terminal microphone.",
             AppHotbarKind::VoiceToggle,
         ));
-        self.register(AppHotbarAction::new(
+        registry.register(AppHotbarAction::new(
             "session.compact",
             "compact",
             "Compact session",
             "Compact the current conversation context.",
             AppHotbarKind::SessionCompact,
         ));
-        self.register(AppHotbarAction::new(
+        registry.register(AppHotbarAction::new(
             "mode.plan",
             "plan",
             "Plan mode",
             "Switch the conversation into Plan mode.",
             AppHotbarKind::Mode(AppMode::Plan),
         ));
-        self.register(AppHotbarAction::new(
+        registry.register(AppHotbarAction::new(
             "mode.agent",
             "agent",
             "Agent mode",
             "Switch the conversation into Agent mode.",
             AppHotbarKind::Mode(AppMode::Agent),
         ));
-        self.register(AppHotbarAction::new(
+        registry.register(AppHotbarAction::new(
             "mode.yolo",
             "yolo",
             "YOLO mode",
             "Switch the conversation into YOLO mode.",
             AppHotbarKind::Mode(AppMode::Yolo),
         ));
-        self.register(AppHotbarAction::new(
+        registry.register(AppHotbarAction::new(
             "reasoning.cycle",
             "reason",
             "Cycle reasoning",
             "Cycle the configured reasoning effort for the active provider.",
             AppHotbarKind::ReasoningCycle,
         ));
-        self.register(AppHotbarAction::new(
+        registry.register(AppHotbarAction::new(
             "sidebar.toggle",
             "side",
             "Toggle sidebar",
             "Show or hide the sidebar.",
             AppHotbarKind::SidebarToggle,
         ));
-        self.register(AppHotbarAction::new(
+        registry.register(AppHotbarAction::new(
             "filetree.toggle",
             "files",
             "Toggle file tree",
             "Show or hide the workspace file tree.",
             AppHotbarKind::FileTreeToggle,
         ));
-        self.register(AppHotbarAction::new(
+        registry.register(AppHotbarAction::new(
             "palette.open",
             "palette",
             "Command palette",
             "Open the command palette.",
             AppHotbarKind::PaletteOpen,
         ));
-        self.register(AppHotbarAction::new(
+        registry.register(AppHotbarAction::new(
             "trust.toggle",
             "trust",
             "Toggle trust",
@@ -407,13 +504,27 @@ impl HotbarActionRegistry {
             AppHotbarKind::TrustToggle,
         ));
     }
+}
 
-    pub(crate) fn register_slash_commands(&mut self) {
-        for info in commands::command_infos() {
-            self.register(SlashHotbarAction::new(info));
-        }
+struct SlashCommandHotbarActionSource;
+
+impl HotbarActionSource for SlashCommandHotbarActionSource {
+    fn descriptor(&self) -> HotbarSourceDescriptor {
+        HOTBAR_SOURCE_DESCRIPTORS
+            .iter()
+            .copied()
+            .find(|descriptor| descriptor.category == HotbarActionCategory::Slash)
+            .expect("slash hotbar source descriptor exists")
     }
 
+    fn register_actions(&self, registry: &mut HotbarActionRegistry) {
+        for info in commands::command_infos() {
+            registry.register(SlashHotbarAction::new(info));
+        }
+    }
+}
+
+impl HotbarActionRegistry {
     #[allow(dead_code)]
     #[must_use]
     pub fn get(&self, id: &str) -> Option<Arc<dyn HotbarAction>> {
@@ -893,6 +1004,109 @@ mod tests {
                 "compact label should be validated: {entry:?}"
             );
         }
+    }
+
+    #[test]
+    fn source_descriptors_cover_dispatch_boundaries() {
+        let descriptors = hotbar_source_descriptors();
+        let categories = descriptors
+            .iter()
+            .map(|descriptor| descriptor.category)
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            categories,
+            BTreeSet::from([
+                HotbarActionCategory::App,
+                HotbarActionCategory::Slash,
+                HotbarActionCategory::Mcp,
+                HotbarActionCategory::Skill,
+                HotbarActionCategory::Plugin,
+            ])
+        );
+        assert_eq!(
+            descriptors
+                .iter()
+                .find(|descriptor| descriptor.category == HotbarActionCategory::App)
+                .map(|descriptor| descriptor.boundary),
+            Some(HotbarSourceDispatchBoundary::DirectApp)
+        );
+        assert_eq!(
+            descriptors
+                .iter()
+                .find(|descriptor| descriptor.category == HotbarActionCategory::Slash)
+                .map(|descriptor| descriptor.boundary),
+            Some(HotbarSourceDispatchBoundary::SlashCommand)
+        );
+        for category in [
+            HotbarActionCategory::Mcp,
+            HotbarActionCategory::Skill,
+            HotbarActionCategory::Plugin,
+        ] {
+            let descriptor = descriptors
+                .iter()
+                .find(|descriptor| descriptor.category == category)
+                .unwrap_or_else(|| panic!("missing descriptor for {category:?}"));
+            assert_eq!(descriptor.boundary, HotbarSourceDispatchBoundary::Deferred);
+            assert_eq!(descriptor.status, "exploratory");
+        }
+    }
+
+    #[test]
+    fn source_adapters_register_previous_default_registry_surface() {
+        let mut registry = HotbarActionRegistry::new();
+        registry.register_source(&BuiltinHotbarActionSource);
+        registry.register_source(&SlashCommandHotbarActionSource);
+
+        let adapter_ids = registry
+            .iter()
+            .map(|action| action.id().to_string())
+            .collect::<Vec<_>>();
+        let default_ids = HotbarActionRegistry::with_builtins()
+            .iter()
+            .map(|action| action.id().to_string())
+            .collect::<Vec<_>>();
+
+        assert_eq!(adapter_ids, default_ids);
+        assert_eq!(
+            BuiltinHotbarActionSource.descriptor().category,
+            HotbarActionCategory::App
+        );
+        assert_eq!(
+            SlashCommandHotbarActionSource.descriptor().category,
+            HotbarActionCategory::Slash
+        );
+    }
+
+    #[test]
+    fn slash_source_matches_command_palette_command_entries() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let palette_slash_ids = build_command_palette_entries(
+            Locale::En,
+            tmp.path(),
+            true,
+            tmp.path(),
+            &tmp.path().join("mcp.json"),
+            None,
+        )
+        .into_iter()
+        .filter(|entry| entry.section() == crate::tui::command_palette::PaletteSection::Command)
+        .filter_map(|entry| {
+            entry
+                .label
+                .strip_prefix('/')
+                .map(|name| format!("slash.{name}"))
+        })
+        .collect::<BTreeSet<_>>();
+
+        let mut registry = HotbarActionRegistry::new();
+        registry.register_source(&SlashCommandHotbarActionSource);
+        let hotbar_slash_ids = registry
+            .iter()
+            .map(|action| action.id().to_string())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(hotbar_slash_ids, palette_slash_ids);
     }
 
     #[test]
