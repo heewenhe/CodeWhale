@@ -46,3 +46,33 @@ conservative rule in `compaction::estimate_text_tokens_conservative`
 The important audit result is that mode prompts stay under 6 percent of the
 base prompt by word count, and approval overlays stay separate. Future prompt
 changes should update this table when they intentionally change the contract.
+
+## v0.8.56 Comparison
+
+Measured against the `v0.8.56` tag with the same `wc -l -w -c` command and
+the same `chars / 3` conservative token estimate. This comparison covers the
+static composed prompt layers that are directly relevant to #2958:
+
+- base prompt layer
+- active mode delta
+- default approval overlay for that mode (`suggest` for Agent and Plan, `auto`
+  for YOLO)
+
+It does not include runtime project context, skills, memory, handoff blocks, or
+other per-session dynamic sections.
+
+| Mode | Ref | Static layers | Words | Bytes | Est. tokens | Delta vs v0.8.56 |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| Agent | `v0.8.56` | `base.md` + `modes/agent.md` + `approvals/suggest.md` | 4706 | 32063 | 10688 | baseline |
+| Agent | current | `constitution.md` + `modes/agent.md` + `approvals/suggest.md` | 6173 | 40203 | 13401 | +2713 |
+| Plan | `v0.8.56` | `base.md` + `modes/plan.md` + `approvals/suggest.md` | 4582 | 31208 | 10403 | baseline |
+| Plan | current | `constitution.md` + `modes/plan.md` + `approvals/suggest.md` | 6075 | 39533 | 13178 | +2775 |
+| YOLO | `v0.8.56` | `base.md` + `modes/yolo.md` + `approvals/auto.md` | 4515 | 30786 | 10262 | baseline |
+| YOLO | current | `constitution.md` + `modes/yolo.md` + `approvals/auto.md` | 5975 | 38882 | 12961 | +2699 |
+
+Token-savings result: **0 estimated tokens saved** in the audited static layers
+relative to `v0.8.56`. The current Constitution is larger than the old
+`base.md`, so this slice records an audit and separation win rather than a size
+win. Future prompt slimming should target the shared Constitution or move
+stable explanatory text behind cheaper dynamic diagnostics before claiming
+Codex-parity token savings.
