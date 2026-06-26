@@ -71,6 +71,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Check Cloudflare deploy environment
+        run: npm run check:deploy-env
       - name: Build OpenNext bundle
         run: npm run build && npx opennextjs-cloudflare build
       - name: Deploy
