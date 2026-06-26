@@ -703,6 +703,7 @@ fn run() -> Result<()> {
             delegate_to_tui(&cli, &resolved_runtime, remote_setup_tui_args(args))
         }
         Some(Commands::Exec(args)) => {
+            reject_exec_global_flags(&args.args)?;
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("exec", args))
         }
@@ -854,6 +855,24 @@ fn tui_args(command: &str, args: TuiPassthroughArgs) -> Vec<String> {
     forwarded.push(command.to_string());
     forwarded.extend(args.args);
     forwarded
+}
+
+fn reject_exec_global_flags(args: &[String]) -> Result<()> {
+    const GLOBAL_ONLY_FLAGS: &[&str] = &["--provider", "--model", "--api-key", "--base-url"];
+
+    for arg in args {
+        if arg == "--" {
+            break;
+        }
+        let flag = arg.split_once('=').map_or(arg.as_str(), |(flag, _)| flag);
+        if GLOBAL_ONLY_FLAGS.contains(&flag) {
+            bail!(
+                "{flag} must be placed before `exec`.\n\nUse:\n  codewhale {flag} <value> exec \"<prompt>\""
+            );
+        }
+    }
+
+    Ok(())
 }
 
 fn run_login_command(store: &mut ConfigStore, args: LoginArgs) -> Result<()> {
@@ -2910,6 +2929,81 @@ mod tests {
             Some(Commands::Fleet(TuiPassthroughArgs { ref args }))
                 if args == &["run", "tasks.json", "--max-workers", "2"]
         ));
+    }
+
+    #[test]
+    fn exec_keeps_global_looking_flags_as_passthrough_args() {
+        let cli = parse_ok(&[
+            "codewhale",
+            "exec",
+            "--provider",
+            "definitely-not-a-provider",
+            "Reply OK",
+        ]);
+
+        let Some(Commands::Exec(args)) = cli.command else {
+            panic!("expected exec command");
+        };
+
+        assert_eq!(
+            args.args,
+            vec![
+                "--provider".to_string(),
+                "definitely-not-a-provider".to_string(),
+                "Reply OK".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn exec_rejects_provider_after_subcommand() {
+        let args = vec![
+            "--provider".to_string(),
+            "definitely-not-a-provider".to_string(),
+            "Reply OK".to_string(),
+        ];
+
+        let err = reject_exec_global_flags(&args).expect_err("provider after exec should fail");
+
+        assert!(
+            err.to_string()
+                .contains("--provider must be placed before `exec`")
+        );
+    }
+
+    #[test]
+    fn exec_rejects_equals_form_provider_after_subcommand() {
+        let args = vec!["--provider=openmodel".to_string(), "Reply OK".to_string()];
+
+        let err = reject_exec_global_flags(&args).expect_err("provider after exec should fail");
+
+        assert!(
+            err.to_string()
+                .contains("--provider must be placed before `exec`")
+        );
+    }
+
+    #[test]
+    fn exec_allows_documented_forwarded_flags() {
+        let args = vec![
+            "--auto".to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "fix tests".to_string(),
+        ];
+
+        reject_exec_global_flags(&args).expect("documented exec flags should pass");
+    }
+
+    #[test]
+    fn exec_allows_literal_prompt_flags_after_separator() {
+        let args = vec![
+            "--".to_string(),
+            "--provider".to_string(),
+            "is literal prompt text".to_string(),
+        ];
+
+        reject_exec_global_flags(&args).expect("separator should stop global flag validation");
     }
 
     #[test]
