@@ -1331,6 +1331,27 @@ fn tool_error_messages_include_actionable_hints() {
 }
 
 #[test]
+fn transient_tool_errors_include_fallback_hint() {
+    let search_error = ToolError::execution_failed("Web search request failed: timeout");
+    let formatted = format_tool_error(&search_error, "web_search");
+
+    assert!(
+        formatted.contains("Fallback: after one retry"),
+        "{formatted}"
+    );
+    assert!(formatted.contains("direct URL"), "{formatted}");
+    assert!(formatted.contains("instead of repeating"), "{formatted}");
+}
+
+#[test]
+fn tool_errors_with_specific_recovery_do_not_get_generic_fallback() {
+    let message = "edit_file search string not found. Recovery: call read_file first.";
+    let formatted = format_tool_error(&ToolError::execution_failed(message), "edit_file");
+
+    assert_eq!(formatted, message);
+}
+
+#[test]
 fn tool_exec_outcome_tracks_duration() {
     let outcome = ToolExecOutcome {
         index: 0,

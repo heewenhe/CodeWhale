@@ -111,7 +111,7 @@ fn mentions_mode_word(lower: &str) -> bool {
 }
 
 pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
-    match err {
+    let message = match err {
         ToolError::InvalidInput { message } => {
             format!("Invalid input for tool '{tool_name}': {message}")
         }
@@ -159,7 +159,103 @@ pub(super) fn format_tool_error(err: &ToolError, tool_name: &str) -> String {
                 )
             }
         }
+    };
+
+    with_transient_tool_fallback_hint(message, err, tool_name)
+}
+
+fn with_transient_tool_fallback_hint(message: String, err: &ToolError, tool_name: &str) -> String {
+    if message_already_has_recovery_hint(&message) {
+        return message;
     }
+
+    let Some(hint) = transient_tool_fallback_hint(err, tool_name, &message) else {
+        return message;
+    };
+
+    format!("{message} Fallback: {hint}")
+}
+
+fn message_already_has_recovery_hint(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("recovery:") || lower.contains("fallback:")
+}
+
+fn transient_tool_fallback_hint(
+    err: &ToolError,
+    tool_name: &str,
+    formatted_message: &str,
+) -> Option<&'static str> {
+    if !is_transient_tool_failure(err, formatted_message) {
+        return None;
+    }
+
+    let lower_tool = tool_name.to_ascii_lowercase();
+    if lower_tool.contains("web_search")
+        || lower_tool.contains("web_run")
+        || lower_tool == "web.run"
+    {
+        return Some(
+            "after one retry, switch to a direct URL/open/fetch path or cached context instead of repeating the same search.",
+        );
+    }
+
+    if lower_tool.contains("fetch_url") {
+        return Some(
+            "after one retry, try a narrower URL/source, use search results or cached context, or state the access limit instead of repeating the same request.",
+        );
+    }
+
+    if lower_tool.contains("file_search") || lower_tool.contains("grep") {
+        return Some(
+            "after one retry, narrow the query/path or inspect likely files directly instead of repeating the same search unchanged.",
+        );
+    }
+
+    if lower_tool.contains("exec_shell")
+        || lower_tool.contains("run_tests")
+        || lower_tool.contains("run_verifiers")
+    {
+        return Some(
+            "after one retry, narrow the command/scope, increase timeout only for expected long runs, or switch to file-level evidence.",
+        );
+    }
+
+    if lower_tool.contains("agent") {
+        return Some(
+            "after one retry, reduce delegated scope or continue in the parent context instead of repeatedly spawning the same agent.",
+        );
+    }
+
+    Some(
+        "after one retry, choose a different tool or narrower strategy instead of repeating the same call unchanged.",
+    )
+}
+
+fn is_transient_tool_failure(err: &ToolError, formatted_message: &str) -> bool {
+    if matches!(err, ToolError::Timeout { .. }) {
+        return true;
+    }
+
+    if !matches!(err, ToolError::ExecutionFailed { .. }) {
+        return false;
+    }
+
+    let lower = formatted_message.to_ascii_lowercase();
+    [
+        "timeout",
+        "timed out",
+        "request failed",
+        "connection",
+        "network",
+        "http 429",
+        "rate limit",
+        "http 5",
+        "anti-bot",
+        "captcha",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 // === Streaming-buffer parsing =========================================
