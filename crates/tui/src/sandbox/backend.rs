@@ -1,11 +1,13 @@
 //! Pluggable sandbox backend abstraction.
 //!
 //! External sandbox backends route shell command execution to a remote service
-//! (e.g. Alibaba OpenSandbox) instead of spawning a local process. This is
-//! complementary to the OS-level sandbox module (Seatbelt / opt-in bubblewrap)
-//! — the external backend *replaces* local execution entirely when configured.
+//! (Alibaba OpenSandbox, or a ShannonNet worker reached by capability name)
+//! instead of spawning a local process. This is complementary to the OS-level
+//! sandbox module (Seatbelt / opt-in bubblewrap) — the external backend
+//! *replaces* local execution entirely when configured.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -28,6 +30,9 @@ pub enum SandboxKind {
     None,
     /// Alibaba OpenSandbox remote execution.
     OpenSandbox,
+    /// ShannonNet: a signed capability invocation on a worker that may live
+    /// on another tailnet node (see `shannon.rs`).
+    Shannon,
 }
 
 impl SandboxKind {
@@ -37,6 +42,7 @@ impl SandboxKind {
         match value.trim().to_ascii_lowercase().as_str() {
             "none" | "" => Some(Self::None),
             "opensandbox" | "open-sandbox" | "open_sandbox" => Some(Self::OpenSandbox),
+            "shannon" | "shannonnet" | "shannon-net" => Some(Self::Shannon),
             _ => None,
         }
     }
@@ -47,6 +53,7 @@ impl SandboxKind {
         match self {
             Self::None => "none",
             Self::OpenSandbox => "opensandbox",
+            Self::Shannon => "shannon",
         }
     }
 }
@@ -58,6 +65,9 @@ impl SandboxKind {
 /// `Arc` and shared across async tasks.
 #[async_trait]
 pub trait SandboxBackend: Send + Sync {
+    /// Which backend this is, for tool metadata and receipts.
+    fn kind(&self) -> SandboxKind;
+
     /// Execute a shell command and return its output.
     ///
     /// `cmd` is the full shell command string (e.g. `"ls -la"`).
@@ -72,8 +82,13 @@ use crate::config::Config;
 /// Returns `None` when no external sandbox backend is configured (i.e. the
 /// `sandbox_backend` key is absent, empty, or `"none"`). When `"opensandbox"`
 /// is set, constructs an [`OpenSandboxBackend`](super::opensandbox::OpenSandboxBackend) using `sandbox_url` and
-/// `sandbox_api_key`.
-pub fn create_backend(config: &Config) -> Result<Option<Box<dyn SandboxBackend>>> {
+/// `sandbox_api_key`. When `"shannon"` is set, constructs a
+/// [`ShannonBackend`](super::shannon::ShannonBackend), which opens a Task
+/// World for `workspace` at construction (session start).
+pub fn create_backend(
+    config: &Config,
+    workspace: &Path,
+) -> Result<Option<Box<dyn SandboxBackend>>> {
     let kind = config
         .sandbox_backend
         .as_deref()
@@ -89,6 +104,29 @@ pub fn create_backend(config: &Config) -> Result<Option<Box<dyn SandboxBackend>>
                 .unwrap_or_else(|| "http://localhost:8080".to_string());
             let api_key = config.sandbox_api_key.clone();
             let backend = super::opensandbox::OpenSandboxBackend::new(base_url, api_key, 30)?;
+            Ok(Some(Box::new(backend)))
+        }
+        SandboxKind::Shannon => {
+            let binary = std::env::var_os("SHANNON")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::path::PathBuf::from("shannon"));
+            let home = config
+                .sandbox_shannon_home
+                .as_deref()
+                .map(crate::config::expand_path)
+                .or_else(|| std::env::var_os("SHANNON_HOME").map(std::path::PathBuf::from))
+                .unwrap_or_else(|| {
+                    dirs::home_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join(".shannon")
+                });
+            let capability = config
+                .sandbox_shannon_capability
+                .clone()
+                .filter(|cap| !cap.trim().is_empty())
+                .unwrap_or_else(|| super::shannon::DEFAULT_CAPABILITY.to_string());
+            let backend =
+                super::shannon::ShannonBackend::new(binary, home, capability, workspace, 30)?;
             Ok(Some(Box::new(backend)))
         }
     }

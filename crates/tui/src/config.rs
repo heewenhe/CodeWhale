@@ -3086,9 +3086,9 @@ pub struct Config {
     pub fallback_providers: Vec<codewhale_config::ProviderKind>,
     pub yolo: Option<bool>,
     pub verbosity: Option<String>,
-    /// External sandbox backend: `"none"` or `"opensandbox"`.
-    /// When set, exec_shell routes commands through the backend's HTTP API
-    /// instead of spawning a local process.
+    /// External sandbox backend: `"none"`, `"opensandbox"`, or `"shannon"`.
+    /// When set, exec_shell routes commands through the backend instead of
+    /// spawning a local process.
     #[serde(alias = "sandboxBackend")]
     pub sandbox_backend: Option<String>,
     /// Base URL for the external sandbox backend (default: `"http://localhost:8080"`).
@@ -3097,6 +3097,14 @@ pub struct Config {
     /// Optional API key for the external sandbox backend (sent as Bearer token).
     #[serde(alias = "sandboxApiKey")]
     pub sandbox_api_key: Option<String>,
+    /// ShannonNet state directory for `sandbox_backend = "shannon"`
+    /// (default: `$SHANNON_HOME`, else `~/.shannon`).
+    #[serde(alias = "sandboxShannonHome")]
+    pub sandbox_shannon_home: Option<String>,
+    /// Capability invoked per shell command for `sandbox_backend = "shannon"`
+    /// (default: `cap://sandbox/exec`).
+    #[serde(alias = "sandboxShannonCapability")]
+    pub sandbox_shannon_capability: Option<String>,
     /// When true and `/usr/bin/bwrap` is executable on Linux, route exec_shell
     /// through bubblewrap (#2184).
     /// Defaults to false. Requires the `bubblewrap` package to be installed
@@ -9458,6 +9466,12 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
     {
         config.sandbox_api_key = Some(value);
     }
+    if let Ok(value) = std::env::var("CODEWHALE_SANDBOX_SHANNON_HOME") {
+        config.sandbox_shannon_home = Some(value);
+    }
+    if let Ok(value) = std::env::var("CODEWHALE_SANDBOX_SHANNON_CAPABILITY") {
+        config.sandbox_shannon_capability = Some(value);
+    }
     if let Ok(value) = std::env::var("CODEWHALE_MANAGED_CONFIG_PATH")
         .or_else(|_| std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH"))
     {
@@ -10616,6 +10630,12 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         sandbox_backend: override_cfg.sandbox_backend.or(base.sandbox_backend),
         sandbox_url: override_cfg.sandbox_url.or(base.sandbox_url),
         sandbox_api_key: override_cfg.sandbox_api_key.or(base.sandbox_api_key),
+        sandbox_shannon_home: override_cfg
+            .sandbox_shannon_home
+            .or(base.sandbox_shannon_home),
+        sandbox_shannon_capability: override_cfg
+            .sandbox_shannon_capability
+            .or(base.sandbox_shannon_capability),
         prefer_bwrap: override_cfg.prefer_bwrap.or(base.prefer_bwrap),
         bwrap_ro_roots: if override_cfg.bwrap_ro_roots.is_empty() {
             base.bwrap_ro_roots

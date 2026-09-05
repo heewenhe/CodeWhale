@@ -424,6 +424,20 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 # The backend uses a 30-second HTTP timeout. Background, interactive, and
 # TTY modes are not supported with external backends — all commands run
 # synchronously via HTTP.
+#
+# ShannonNet backend: each shell command becomes a signed capability
+# invocation on a ShannonNet worker (which may run on another tailnet node).
+# At session start Codewhale resolves its durable `codewhale` Agent, creates
+# a Task World named after the workspace, and attaches the capability; every
+# command then leaves a signed receipt (`shannon trace`). Requires the
+# `shannon` CLI on PATH (or `$SHANNON`) and an admitted provider for the
+# capability (`shannon cap advertise`).
+#
+#   sandbox_backend = "shannon"
+#   sandbox_shannon_home = "~/.shannon"           # default: $SHANNON_HOME or ~/.shannon
+#   sandbox_shannon_capability = "cap://sandbox/exec"  # default
+#
+# Env-var overrides: CODEWHALE_SANDBOX_SHANNON_HOME, CODEWHALE_SANDBOX_SHANNON_CAPABILITY.
 # ─────────────────────────────────────────────────────────────────────────────────
 # Bubblewrap (Linux only, additional filesystem isolation)
 # ─────────────────────────────────────────────────────────────────────────────────

@@ -5097,7 +5097,7 @@ impl ToolSpec for BashTool {
                 "safety_level": format!("{:?}", safety.level),
                 "interactive": false,
                 "canceled": false,
-                "sandbox_backend": "opensandbox",
+                "sandbox_backend": backend.kind().as_str(),
                 "expense_class": match command_expense {
                     CommandExpense::Heavy => "heavy",
                     CommandExpense::Normal => "normal",

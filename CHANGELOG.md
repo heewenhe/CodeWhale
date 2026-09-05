@@ -67,8 +67,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `workers`, `help`); every other verb stays dispatchable and is documented
   under explicit groups in `/fleet help`. The roster no longer shows the
   untouched built-in `general` alias next to `worker` (#5888).
+- `sandbox_backend = "shannon"`: shell commands run as signed ShannonNet
+  capability invocations (`cap://sandbox/exec`) on a worker that may live on
+  another tailnet node. Codewhale opens a Task World per session for its
+  durable `codewhale` Agent and every command leaves a receipt in
+  `shannon trace`. New keys `sandbox_shannon_home` and
+  `sandbox_shannon_capability`; tool metadata now reports the actual
+  external backend kind instead of always `opensandbox`.
 
-## [0.9.12] - 2026-09-04
+## [0.9.12] - 2026-09-03
 
 Codewhale v0.9.12 puts computer use in the binary, opens two new routes —
 Alibaba Model Studio through the data-driven provider table and Concentrate

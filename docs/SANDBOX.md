@@ -18,6 +18,7 @@ run before execution reaches this boundary.
 | No OS wrapper | Linux without usable opt-in bwrap | Default | `none` |
 | No OS wrapper | Windows | Current implementation | `none` |
 | OpenSandbox-compatible service | Any supported host | `sandbox_backend = "opensandbox"` | External execution path |
+| ShannonNet worker (signed capability invocation, any tailnet node) | Any supported host with the `shannon` CLI | `sandbox_backend = "shannon"` | External execution path |
 
 The repository contains a seccomp implementation module plus a future Windows
 helper contract. They are not wired into child-command launch, so Codewhale
@@ -148,6 +149,30 @@ sandbox_api_key = "YOUR_API_KEY"
 
 `sandbox_backend = "none"` (or omitting the key) keeps local execution.
 
+## External ShannonNet execution
+
+When `sandbox_backend = "shannon"` is configured, each shell command becomes
+one signed `cap://sandbox/exec` invocation through the `shannon` CLI. The
+worker that executes it is whichever admitted provider the ShannonNet router
+selects — typically a `shannon-worker --kind docker` or a
+`shannon-tsnet-worker` on another tailnet node — and Codewhale never learns
+its address. At session start Codewhale resolves its durable `codewhale`
+Agent (creating it once), creates a Task World named after the workspace, and
+attaches the capability; the worker verifies that grant chain, executes in a
+read-only, network-less container, and returns stdout, stderr, and the exit
+code inside a signed receipt. `shannon trace <task>` lists every command with
+the provider and transport evidence that served it.
+
+```toml
+sandbox_backend = "shannon"
+sandbox_shannon_home = "~/.shannon"                 # default: $SHANNON_HOME or ~/.shannon
+sandbox_shannon_capability = "cap://sandbox/exec"   # default
+```
+
+The `shannon` binary comes from `$SHANNON` or `PATH`. Isolation belongs to
+the worker; Codewhale validates the receipt contract. Background, interactive,
+and TTY modes are unsupported, as with every external backend.
+
 ## Policies and fallbacks
 
 The local `sandbox_mode` values are:
@@ -173,6 +198,7 @@ backend:
 
 - `CODEWHALE_SANDBOX_MODE`
 - `CODEWHALE_SANDBOX_BACKEND`
+- `CODEWHALE_SANDBOX_SHANNON_HOME`, `CODEWHALE_SANDBOX_SHANNON_CAPABILITY`
 - `CODEWHALE_SANDBOX_URL`
 - `CODEWHALE_SANDBOX_API_KEY`
 

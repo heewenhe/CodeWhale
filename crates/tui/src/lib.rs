@@ -11947,7 +11947,7 @@ async fn build_direct_workflow_tool(
         .search
         .as_ref()
         .and_then(|search| search.base_url.clone());
-    if let Some(backend) = crate::sandbox::backend::create_backend(config)? {
+    if let Some(backend) = crate::sandbox::backend::create_backend(config, workspace)? {
         context = context.with_sandbox_backend(Arc::from(backend));
     }
 
