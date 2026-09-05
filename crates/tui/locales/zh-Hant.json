@@ -366,6 +366,7 @@
   "ModelsCodexHint": "ChatGPT 模型透過 Codex 載入。查詢時間並不代表供應商已重新整理模型目錄。",
   "ModelsSourceFallback": "內建或已設定的模型；尚未驗證可用性。",
   "CmdNetworkDescription": "管理網路允許和拒絕規則",
+  "CmdShannonDescription": "Inspect this session's ShannonNet World, capabilities, children, and receipts",
   "CmdUpdateDescription": "檢查並安裝新的 Codewhale 版本",
   "CmdNewDescription": "開始一個新的已儲存工作階段",
   "CmdNoteDescription": "添加、列出、編輯或刪除工作區筆記",

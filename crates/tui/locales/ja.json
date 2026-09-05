@@ -495,6 +495,7 @@
   "ModelsSourceFallback": "同梱または設定済みのモデル。利用可能かどうかは未確認です。",
   "CmdModelDbDescription": "内蔵のモデルデータベースを閲覧する",
   "CmdNetworkDescription": "ネットワーク許可・拒否ルールを管理",
+  "CmdShannonDescription": "Inspect this session's ShannonNet World, capabilities, children, and receipts",
   "CmdUpdateDescription": "新しい Codewhale リリースを確認してインストールします",
   "CmdNoteDescription": "ワークスペースノートの追加、一覧、編集、削除",
   "CmdThemeDescription": "テーマを切り替え（ダーク/ライト/グレースケール/システム）",

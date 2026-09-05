@@ -11405,6 +11405,23 @@ async fn run_subagent(
         child_runtime.context.sandbox_backend = Some(Arc::clone(child));
         child_runtime
     });
+    // Bounded context instead of a transcript: the session's memory hits
+    // for this task go into the authority layer's memory graph, and the
+    // child gets back only what its projected World may see.
+    let prompt = match child_backend.as_ref() {
+        Some(child) => {
+            let notes = session_memory_notes(runtime, &prompt);
+            match child.child_context(&prompt, &notes).await {
+                Ok(Some(brief)) => format!("{prompt}\n\n{brief}"),
+                Ok(None) => prompt,
+                Err(err) => {
+                    tracing::warn!(target: "subagent", ?err, agent_id, "sub-agent context was not compiled");
+                    prompt
+                }
+            }
+        }
+        None => prompt,
+    };
     let result = run_subagent_in(
         child_runtime.as_ref().unwrap_or(runtime),
         agent_id.clone(),
@@ -11435,6 +11452,40 @@ async fn run_subagent(
         }
     }
     result
+}
+
+/// The session's native-memory hits for a task, as notes a child backend
+/// may import. Empty when memory is off or the store has nothing.
+fn session_memory_notes(
+    runtime: &SubAgentRuntime,
+    task: &str,
+) -> Vec<crate::sandbox::backend::MemoryNote> {
+    let Some(memory_path) = runtime.context.memory_path.as_deref() else {
+        return Vec::new();
+    };
+    let store = crate::commands::native_store_from_memory_path(memory_path);
+    match store.search_for_workspace(&runtime.context.workspace, task, 12) {
+        Ok(hits) => hits
+            .into_iter()
+            .filter(|hit| !hit.stale)
+            .map(|hit| crate::sandbox::backend::MemoryNote {
+                key: format!(
+                    "{}:{}-{}",
+                    hit.source.display(),
+                    hit.line_start,
+                    hit.line_end
+                ),
+                content: hit.text,
+                source: format!(
+                    "codewhale-memory:{}:{}-{}",
+                    hit.source.display(),
+                    hit.line_start,
+                    hit.line_end
+                ),
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

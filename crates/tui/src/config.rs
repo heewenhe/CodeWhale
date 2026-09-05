@@ -7976,12 +7976,12 @@ fn root_deepseek_model_is_foreign_to_direct_provider(provider: ApiProvider, mode
 mod home;
 mod paths;
 use paths::{
-    canonicalize_or_keep, codewhale_home_dir, default_config_path, default_managed_config_path,
+    canonicalize_or_keep, default_config_path, default_managed_config_path,
     default_mcp_config_path, default_memory_path, default_notes_path, default_requirements_path,
     default_skills_dir, env_config_path, expand_pathbuf, home_config_path, try_default_config_path,
     workspace_config_key,
 };
-pub(crate) use paths::{effective_home_dir, expand_path};
+pub(crate) use paths::{codewhale_home_dir, effective_home_dir, expand_path};
 
 pub(crate) fn workspace_trust_config_candidate_paths() -> Vec<PathBuf> {
     #[cfg(test)]

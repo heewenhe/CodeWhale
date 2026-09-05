@@ -495,6 +495,7 @@
   "ModelsSourceFallback": "기본 제공 또는 설정된 모델입니다. 사용 가능 여부는 확인되지 않았습니다.",
   "CmdModelDbDescription": "내장 모델 데이터베이스를 조회합니다",
   "CmdNetworkDescription": "네트워크 허용/차단 규칙을 관리합니다",
+  "CmdShannonDescription": "Inspect this session's ShannonNet World, capabilities, children, and receipts",
   "CmdUpdateDescription": "새 Codewhale 릴리스를 확인하고 설치합니다",
   "CmdNoteDescription": "작업 공간 메모를 추가, 목록 조회, 편집, 삭제합니다",
   "CmdThemeDescription": "테마를 전환하거나 테마 선택 화면을 엽니다",

@@ -7,6 +7,7 @@ mod dispatch;
 mod jobs;
 mod mcp;
 mod network;
+mod shannon;
 mod task;
 mod update;
 
@@ -43,6 +44,10 @@ impl CommandGroup for UtilityCommands {
             Box::new(
                 ContextualCommand::from_contract::<update::UpdateCmd>()
                     .expect("update registration"),
+            ),
+            Box::new(
+                ContextualCommand::from_contract::<shannon::ShannonCmd>()
+                    .expect("shannon registration"),
             ),
         ])
     }

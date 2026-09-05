@@ -24,6 +24,16 @@
 //! `join`: a typed receipt on the task and the child's World destroyed.
 //! The child ships and runs in its own session container.
 //!
+//! [`SandboxBackend::child_context`] imports the session's memory hits into
+//! the `codewhale` Agent's memory graph (with provenance, idempotently) and
+//! compiles the bounded context the child's World may see — confidential
+//! notes never cross into it — as a text block for the child's prompt.
+//!
+//! Session end: dropping the session backend closes the World (a
+//! content-addressed checkpoint, then destroy) and the worker's session
+//! container, detached. A pointer file under the Codewhale home lets
+//! `/shannon` inspect the live session.
+//!
 //! Workspace sync: with `sync` on (the default), the backend ships the
 //! session's working tree into the worker's per-World session container
 //! before each command — a full archive first, then only what changed
@@ -45,7 +55,7 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use serde_json::{Value, json};
 
-use super::backend::{SandboxBackend, SandboxKind, SandboxOutput};
+use super::backend::{MemoryNote, SandboxBackend, SandboxKind, SandboxOutput};
 
 /// Name of the durable principal this installation acts as.
 pub const AGENT_NAME: &str = "codewhale";
@@ -66,6 +76,10 @@ pub struct ShannonBackend {
     /// Agent this backend acts as: `codewhale` for a session, a spawned
     /// child's id for a sub-agent.
     agent: String,
+    /// The session Agent for a child backend (memories are imported under
+    /// it so the child sees them through its projection); `None` for the
+    /// session backend itself.
+    parent: Option<String>,
     world_id: String,
     capability: String,
     timeout_secs: u64,
@@ -139,16 +153,41 @@ impl ShannonBackend {
             &capability,
         ])
         .with_context(|| format!("failed to attach {capability} to the session World"))?;
-        Ok(Self {
+        let backend = Self {
             cli,
             agent: AGENT_NAME.to_string(),
+            parent: None,
             world_id,
             capability,
             timeout_secs,
             workspace: workspace.to_path_buf(),
             sync: sync
                 .then(|| tokio::sync::Mutex::new(WorkspaceSync::new(workspace.to_path_buf()))),
-        })
+        };
+        backend.write_session_pointer();
+        Ok(backend)
+    }
+
+    /// Where `/shannon` finds this session: a small pointer file under the
+    /// Codewhale home, keyed by workspace, naming the ShannonNet home and the
+    /// World. Best effort; inspection is a convenience, not authority.
+    fn write_session_pointer(&self) {
+        let Some(path) = session_pointer_path(&self.workspace) else {
+            return;
+        };
+        let pointer = json!({
+            "agent": self.agent,
+            "world_id": self.world_id,
+            "capability": self.capability,
+            "shannon_home": self.cli.home,
+            "shannon_binary": self.cli.binary,
+            "workspace": self.workspace,
+            "started_at": chrono::Utc::now().to_rfc3339(),
+        });
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, pointer.to_string());
     }
 
     /// The Agent this backend signs as.
@@ -231,21 +270,165 @@ impl ShannonBackend {
 }
 
 impl Drop for ShannonBackend {
-    /// Best-effort teardown of the worker's session container. Detached: a
-    /// backend may drop inside an async context and must not block; the
-    /// worker's idle reaper covers the case where this never runs.
+    /// Best-effort session end, detached: a backend may drop inside an async
+    /// context and must not block. The worker's session container is
+    /// destroyed, and — for the session backend, never a child (its join
+    /// already retired the World) — the World is closed: a content-addressed
+    /// checkpoint, then destroy. The steps run in order in one detached
+    /// shell because both touch the same state; the worker's idle reaper
+    /// covers the case where none of this runs.
     fn drop(&mut self) {
-        if self.sync.is_none() {
-            return;
+        let mut steps: Vec<Vec<OsString>> = Vec::new();
+        if self.sync.is_some() {
+            steps.push(cli_args(&self.cli.home, &self.invoke_args("destroy", "{}")));
         }
-        let args = self.invoke_args("destroy", "{}");
-        let _ = std::process::Command::new(&self.cli.binary)
-            .args(cli_args(&self.cli.home, &args))
+        if self.parent.is_none() {
+            steps.push(cli_args(
+                &self.cli.home,
+                &[
+                    "world",
+                    "close",
+                    "--reason",
+                    "codewhale session closed",
+                    &self.world_id,
+                ],
+            ));
+            if let Some(path) = session_pointer_path(&self.workspace) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        spawn_detached(&self.cli.binary, steps);
+    }
+}
+
+/// Run each `shannon` argv in order, detached from this process.
+fn spawn_detached(binary: &Path, steps: Vec<Vec<OsString>>) {
+    if steps.is_empty() {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        let script = steps
+            .iter()
+            .map(|args| {
+                std::iter::once(binary.as_os_str().to_owned())
+                    .chain(args.iter().cloned())
+                    .map(|a| {
+                        shlex::try_quote(&a.to_string_lossy())
+                            .map(|q| q.into_owned())
+                            .unwrap_or_default()
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        let _ = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
     }
+    #[cfg(not(unix))]
+    {
+        // Without a shell to sequence them, run only the first step; the
+        // worker reaper and a later `shannon world close` cover the rest.
+        if let Some(args) = steps.first() {
+            let _ = std::process::Command::new(binary)
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn();
+        }
+    }
+}
+
+/// At most this many memory hits travel into the graph per child.
+const MAX_IMPORTED_NOTES: usize = 12;
+
+/// The session pointer `/shannon` reads:
+/// `<codewhale home>/shannon-sessions/<workspace slug>.json`.
+pub fn session_pointer_path(workspace: &Path) -> Option<PathBuf> {
+    let home = crate::config::codewhale_home_dir()
+        .ok()
+        .flatten()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".codewhale")))?;
+    let slug = world_name(workspace);
+    Some(
+        home.join("shannon-sessions")
+            .join(format!("{}.json", slug.trim_start_matches("codewhale:"))),
+    )
+}
+
+/// Render a compiled context as the block appended to a child's prompt:
+/// the items the child's World may see, with provenance, and the
+/// compiler's information-flow notes. Returns `None` when nothing beyond
+/// the task itself was compiled.
+fn render_context_brief(compiled: &Value) -> Option<String> {
+    let items = compiled.get("items")?.as_array()?;
+    let mut lines = Vec::new();
+    for item in items {
+        let kind = item.get("kind").and_then(Value::as_str).unwrap_or("");
+        if kind == "task" {
+            continue;
+        }
+        let content = item
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if content.is_empty() {
+            continue;
+        }
+        let provenance = item
+            .get("provenance")
+            .and_then(Value::as_array)
+            .map(|p| {
+                p.iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        if provenance.is_empty() {
+            lines.push(format!("- [{kind}] {content}"));
+        } else {
+            lines.push(format!("- [{kind}] {content} (from {provenance})"));
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    let hash = compiled.get("hash").and_then(Value::as_str).unwrap_or("");
+    let used = compiled
+        .get("used_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let budget = compiled
+        .get("budget_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut out = format!(
+        "Context compiled by ShannonNet for this task ({used}/{budget} tokens, hash {}):\n{}",
+        &hash[..hash.len().min(16)],
+        lines.join("\n")
+    );
+    if let Some(notes) = compiled.get("security_notes").and_then(Value::as_array)
+        && !notes.is_empty()
+    {
+        out.push_str("\nInformation-flow notes: ");
+        out.push_str(
+            &notes
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+    }
+    Some(out)
 }
 
 /// Stamp of one workspace file: enough to notice a change cheaply.
@@ -519,7 +702,7 @@ impl SandboxBackend for ShannonBackend {
                 "--objective",
                 &objective,
                 "--world-project",
-                &self.capability,
+                &format!("{},memory", self.capability),
             ],
         )
         .context("ShannonNet spawn failed")?;
@@ -538,6 +721,7 @@ impl SandboxBackend for ShannonBackend {
         Ok(Some(Arc::new(Self {
             cli: self.cli.clone(),
             agent: child_agent,
+            parent: Some(self.parent.clone().unwrap_or_else(|| self.agent.clone())),
             world_id: child_world,
             capability: self.capability.clone(),
             timeout_secs: self.timeout_secs,
@@ -575,6 +759,55 @@ impl SandboxBackend for ShannonBackend {
             .await
             .context("ShannonNet join failed")
             .map(|_| ())
+    }
+
+    async fn child_context(&self, task: &str, notes: &[MemoryNote]) -> Result<Option<String>> {
+        let owner = self.parent.clone().unwrap_or_else(|| self.agent.clone());
+        for note in notes.iter().take(MAX_IMPORTED_NOTES) {
+            let content: String = note.content.chars().take(2000).collect();
+            run_json(
+                &self.cli.binary,
+                &self.cli.home,
+                &[
+                    "memory",
+                    "add",
+                    "--agent",
+                    &owner,
+                    "--type",
+                    "semantic",
+                    "--key",
+                    &note.key,
+                    "--content",
+                    &content,
+                    "--source",
+                    &note.source,
+                    "--confidence",
+                    "0.7",
+                ],
+            )
+            .await
+            .with_context(|| format!("ShannonNet memory import failed for {}", note.key))?;
+        }
+        let task_text: String = task.chars().take(500).collect();
+        let compiled = run_json(
+            &self.cli.binary,
+            &self.cli.home,
+            &[
+                "context",
+                "compile",
+                "--agent",
+                &self.agent,
+                "--world",
+                &self.world_id,
+                "--task",
+                &task_text,
+                "--budget",
+                "512",
+            ],
+        )
+        .await
+        .context("ShannonNet context compile failed")?;
+        Ok(render_context_brief(&compiled))
     }
 
     async fn exec(&self, cmd: &str, env: &HashMap<String, String>) -> Result<SandboxOutput> {
@@ -642,6 +875,9 @@ case "$1 $2" in
   "world attach") printf '{{"capability":"%s"}}' "$8" ;;
   "agent spawn") printf '{{"agent":{{"id":"child-1","name":"%s"}},"world":{{"id":"world-child"}}}}' "$8" ;;
   "agent join") printf '{{"child_agent_id":"%s","provenance_root":"abc"}}' "$4" ;;
+  "memory add") printf '{{"id":"memory://1"}}' ;;
+  "context compile") printf '{{"items":[{{"kind":"task","content":"t"}},{{"kind":"memory.semantic","content":"parser test is flaky","provenance":["codewhale-memory:notes.md:1-2"]}},{{"kind":"world.capability","content":"cap://sandbox/exec"}}],"used_tokens":40,"budget_tokens":512,"hash":"0123456789abcdef0123","security_notes":["1 confidential memory excluded by World policy"]}}' ;;
+  "world close") printf '{{"id":"cp-1"}}' ;;
   "cap invoke")
     action=invoke; input=""
     while [ $# -gt 0 ]; do
@@ -880,6 +1116,69 @@ esac
         );
         assert_eq!(sanitize_role("Code Reviewer!"), "Code-Reviewer");
         assert_eq!(sanitize_role("///"), "child");
+        assert!(
+            log.contains("--world-project cap://sandbox/exec,memory"),
+            "{log}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_context_imports_notes_under_the_session_agent_and_compiles_for_the_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_shannon(dir.path(), true);
+        let parent = ShannonBackend::new(
+            binary,
+            dir.path().join("home"),
+            DEFAULT_CAPABILITY.into(),
+            Path::new("/tmp/proj"),
+            30,
+            false,
+        )
+        .unwrap();
+        let child = parent
+            .for_child("scout", "fix the parser")
+            .unwrap()
+            .unwrap();
+        let notes = vec![MemoryNote {
+            key: "notes.md:1-2".into(),
+            content: "parser test is flaky".into(),
+            source: "codewhale-memory:notes.md:1-2".into(),
+        }];
+        let brief = child
+            .child_context("fix the parser", &notes)
+            .await
+            .unwrap()
+            .expect("brief");
+        assert!(
+            brief.contains(
+                "[memory.semantic] parser test is flaky (from codewhale-memory:notes.md:1-2)"
+            ),
+            "{brief}"
+        );
+        assert!(
+            brief.contains("40/512 tokens, hash 0123456789abcdef"),
+            "{brief}"
+        );
+        assert!(
+            brief.contains("Information-flow notes: 1 confidential memory excluded"),
+            "{brief}"
+        );
+        assert!(!brief.contains("[task]"), "{brief}");
+        let log = std::fs::read_to_string(dir.path().join("argv.log")).unwrap();
+        // Notes belong to the session Agent; the compile is for the child in its World.
+        assert!(
+            log.contains("memory add --agent codewhale --type semantic --key notes.md:1-2 --content parser test is flaky --source codewhale-memory:notes.md:1-2"),
+            "{log}"
+        );
+        assert!(
+            log.contains("context compile --agent child-1 --world world-child --task fix the parser --budget 512"),
+            "{log}"
+        );
+        assert!(
+            render_context_brief(&json!({"items":[{"kind":"task","content":"only"}],"hash":"x"}))
+                .is_none()
+        );
     }
 
     #[test]

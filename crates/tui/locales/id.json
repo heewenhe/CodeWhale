@@ -492,6 +492,7 @@
   "ModelsSourceFallback": "Model bawaan atau yang dikonfigurasi; ketersediaan belum diverifikasi.",
   "CmdModelDbDescription": "Telusuri database model bawaan",
   "CmdNetworkDescription": "Kelola aturan izinkan dan tolak jaringan",
+  "CmdShannonDescription": "Inspect this session's ShannonNet World, capabilities, children, and receipts",
   "CmdUpdateDescription": "Periksa dan pasang rilis Codewhale baru",
   "CmdNoteDescription": "Tambah, tampilkan, edit, atau hapus catatan workspace",
   "CmdThemeDescription": "Ganti tema atau buka pemilih tema",

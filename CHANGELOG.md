@@ -74,6 +74,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `shannon trace`. New keys `sandbox_shannon_home` and
   `sandbox_shannon_capability`; tool metadata now reports the actual
   external backend kind instead of always `opensandbox`.
+- `/shannon [world|trace|children]` inspects the session's ShannonNet
+  World: agent, projected capabilities, children, and receipts.
+- ShannonNet sub-agents get compiled context: the session's native-memory
+  hits are imported with provenance and the child's projected World decides
+  what it sees (confidential notes never cross); the session World is
+  checkpointed and closed when the backend drops.
 - Sub-agents under delegated authority: with the ShannonNet backend the
   `agent` tool spawns a child identity with a World projected from the
   session World, the child's shell commands are signed as that child, and a

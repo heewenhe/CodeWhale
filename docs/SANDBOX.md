@@ -187,6 +187,19 @@ World is destroyed. A delegation that cannot be established fails the spawn
 rather than running the child as the session principal. Backends without
 delegated authority (OpenSandbox) share the parent's backend as before.
 
+Children also get bounded context instead of a transcript: the session's
+native-memory hits for the task (when `[memory]` is enabled) are imported
+into the `codewhale` Agent's memory graph with provenance, and ShannonNet
+compiles what the child's projected World may see — confidential notes
+never cross into it — into a short block appended to the child's prompt,
+with the compiler's information-flow notes and context hash.
+
+Session end closes the World: dropping the session backend runs a
+content-addressed checkpoint, destroys the World, and tears down the
+worker's session container, detached. `/shannon [world|trace|children]`
+inspects the live session: the Agent, the capabilities projected into the
+World with their grant depth, the agent tree, and the receipts on the task.
+
 ```toml
 sandbox_backend = "shannon"
 sandbox_shannon_home = "~/.shannon"                 # default: $SHANNON_HOME or ~/.shannon

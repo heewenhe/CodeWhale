@@ -96,6 +96,25 @@ pub trait SandboxBackend: Send + Sync {
     ) -> Result<()> {
         Ok(())
     }
+
+    /// Bounded context for a sub-agent's task, compiled from what its World
+    /// may see. `notes` are the session's own memory hits for the task; a
+    /// backend with a memory graph imports them with provenance and returns
+    /// a text block to append to the child's prompt. The default has no
+    /// such graph and returns `None` (the child gets the prompt alone).
+    async fn child_context(&self, _task: &str, _notes: &[MemoryNote]) -> Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+/// One note from the session's memory, offered to a child backend.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryNote {
+    /// Stable key (source and line span) so re-imports do not duplicate.
+    pub key: String,
+    pub content: String,
+    /// Provenance reference recorded with the memory.
+    pub source: String,
 }
 
 use crate::config::Config;
