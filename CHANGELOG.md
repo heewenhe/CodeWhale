@@ -74,6 +74,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `shannon trace`. New keys `sandbox_shannon_home` and
   `sandbox_shannon_capability`; tool metadata now reports the actual
   external backend kind instead of always `opensandbox`.
+- Sub-agents under delegated authority: with the ShannonNet backend the
+  `agent` tool spawns a child identity with a World projected from the
+  session World, the child's shell commands are signed as that child, and a
+  join receipt is recorded when it finishes. `SandboxBackend::for_child` /
+  `child_joined` default to sharing the parent backend for other backends.
 - Workspace sync for the ShannonNet backend (`sandbox_shannon_sync`, default
   on): the session's non-ignored files are shipped into the worker's
   per-World session container before each command — full tree first, then

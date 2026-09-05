@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -73,6 +74,28 @@ pub trait SandboxBackend: Send + Sync {
     /// `cmd` is the full shell command string (e.g. `"ls -la"`).
     /// `env` contains additional environment variables to set.
     async fn exec(&self, cmd: &str, env: &HashMap<String, String>) -> Result<SandboxOutput>;
+
+    /// A backend for a sub-agent about to run under this one. Backends with
+    /// a notion of delegated authority (ShannonNet) return a child bound to
+    /// its own identity and projected World; the default shares this
+    /// backend unchanged (`None`), which is what a plain remote executor
+    /// means by "sub-agent".
+    fn for_child(&self, _role: &str, _objective: &str) -> Result<Option<Arc<dyn SandboxBackend>>> {
+        Ok(None)
+    }
+
+    /// Called on a backend returned by [`for_child`](Self::for_child) once
+    /// its sub-agent has finished, with the child's final summary, token
+    /// usage, and whether it completed. Records the join and retires the
+    /// child's authority where the backend has such a notion.
+    async fn child_joined(
+        &self,
+        _summary: Option<&str>,
+        _tokens: u64,
+        _succeeded: bool,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 use crate::config::Config;

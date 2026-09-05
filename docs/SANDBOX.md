@@ -176,6 +176,17 @@ over its size budget, destroys the session when the backend drops or after
 an idle TTL, and never exposes its own checkout to the session. A failed
 sync fails the command rather than running it on a stale tree.
 
+Sub-agents run under delegated authority. When the `agent` tool spawns a
+child, the backend spawns a ShannonNet child identity certified by the
+session's `codewhale` Agent, with a World projected from the session World
+that exposes only the sandbox capability (delegation depth attenuated); the
+child's shell commands are signed as that child in that World and ship into
+the child's own session container. When the child finishes, a join receipt
+(its final summary and outcome) is recorded on the task and the child's
+World is destroyed. A delegation that cannot be established fails the spawn
+rather than running the child as the session principal. Backends without
+delegated authority (OpenSandbox) share the parent's backend as before.
+
 ```toml
 sandbox_backend = "shannon"
 sandbox_shannon_home = "~/.shannon"                 # default: $SHANNON_HOME or ~/.shannon

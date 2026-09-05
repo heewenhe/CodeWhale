@@ -17,6 +17,13 @@
 //! named after the workspace, and attaches the sandbox capability. Each
 //! `exec` is one signed invocation in that World.
 //!
+//! Sub-agents: [`SandboxBackend::for_child`] maps Codewhale's `agent` tool to
+//! Shannon `spawn` — a child identity certified by this Agent, with a World
+//! projected from the session World (only `cap://sandbox/exec`, with the
+//! delegation depth attenuated) — and [`SandboxBackend::child_joined`] to
+//! `join`: a typed receipt on the task and the child's World destroyed.
+//! The child ships and runs in its own session container.
+//!
 //! Workspace sync: with `sync` on (the default), the backend ships the
 //! session's working tree into the worker's per-World session container
 //! before each command — a full archive first, then only what changed
@@ -30,6 +37,7 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
@@ -55,9 +63,13 @@ const SYNC_MAX_FILE_BYTES: u64 = 16 << 20;
 #[derive(Debug)]
 pub struct ShannonBackend {
     cli: Cli,
+    /// Agent this backend acts as: `codewhale` for a session, a spawned
+    /// child's id for a sub-agent.
+    agent: String,
     world_id: String,
     capability: String,
     timeout_secs: u64,
+    workspace: PathBuf,
     sync: Option<tokio::sync::Mutex<WorkspaceSync>>,
 }
 
@@ -129,12 +141,20 @@ impl ShannonBackend {
         .with_context(|| format!("failed to attach {capability} to the session World"))?;
         Ok(Self {
             cli,
+            agent: AGENT_NAME.to_string(),
             world_id,
             capability,
             timeout_secs,
+            workspace: workspace.to_path_buf(),
             sync: sync
                 .then(|| tokio::sync::Mutex::new(WorkspaceSync::new(workspace.to_path_buf()))),
         })
+    }
+
+    /// The Agent this backend signs as.
+    #[must_use]
+    pub fn agent(&self) -> &str {
+        &self.agent
     }
 
     fn invoke_args<'a>(&'a self, action: &'a str, input: &'a str) -> Vec<&'a str> {
@@ -142,7 +162,7 @@ impl ShannonBackend {
             "cap",
             "invoke",
             "--agent",
-            AGENT_NAME,
+            &self.agent,
             "--world",
             &self.world_id,
             "--cap",
@@ -354,6 +374,27 @@ fn finish_archive(builder: tar::Builder<flate2::write::GzEncoder<Vec<u8>>>) -> R
     gz.finish().context("compressing archive")
 }
 
+/// Role names travel into an Agent name and URI slug: keep them plain.
+fn sanitize_role(role: &str) -> String {
+    let cleaned: String = role
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .take(64)
+        .collect();
+    let cleaned = cleaned.trim_matches('-').to_string();
+    if cleaned.is_empty() {
+        "child".to_string()
+    } else {
+        cleaned
+    }
+}
+
 /// World name derived from the workspace path: stable per project, readable
 /// in `shannon trace`.
 fn world_name(workspace: &Path) -> String {
@@ -460,6 +501,82 @@ impl SandboxBackend for ShannonBackend {
         SandboxKind::Shannon
     }
 
+    fn for_child(&self, role: &str, objective: &str) -> Result<Option<Arc<dyn SandboxBackend>>> {
+        let role = sanitize_role(role);
+        let objective: String = objective.chars().take(500).collect();
+        let spawned = run_json_blocking(
+            &self.cli.binary,
+            &self.cli.home,
+            &[
+                "agent",
+                "spawn",
+                "--parent",
+                &self.agent,
+                "--world",
+                &self.world_id,
+                "--role",
+                &role,
+                "--objective",
+                &objective,
+                "--world-project",
+                &self.capability,
+            ],
+        )
+        .context("ShannonNet spawn failed")?;
+        let child_agent = spawned
+            .pointer("/agent/id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .context("ShannonNet spawn returned no child agent id")?
+            .to_string();
+        let child_world = spawned
+            .pointer("/world/id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .context("ShannonNet spawn returned no child world id")?
+            .to_string();
+        Ok(Some(Arc::new(Self {
+            cli: self.cli.clone(),
+            agent: child_agent,
+            world_id: child_world,
+            capability: self.capability.clone(),
+            timeout_secs: self.timeout_secs,
+            workspace: self.workspace.clone(),
+            sync: self
+                .sync
+                .as_ref()
+                .map(|_| tokio::sync::Mutex::new(WorkspaceSync::new(self.workspace.clone()))),
+        })))
+    }
+
+    async fn child_joined(
+        &self,
+        summary: Option<&str>,
+        tokens: u64,
+        succeeded: bool,
+    ) -> Result<()> {
+        let conclusion: String = summary.unwrap_or_default().chars().take(2000).collect();
+        let tokens = tokens.to_string();
+        let confidence = if succeeded { "1" } else { "0" };
+        let mut args = vec![
+            "agent",
+            "join",
+            "--child",
+            &self.agent,
+            "--tokens",
+            &tokens,
+            "--confidence",
+            confidence,
+        ];
+        if !conclusion.trim().is_empty() {
+            args.extend(["--conclusion", conclusion.as_str()]);
+        }
+        run_json(&self.cli.binary, &self.cli.home, &args)
+            .await
+            .context("ShannonNet join failed")
+            .map(|_| ())
+    }
+
     async fn exec(&self, cmd: &str, env: &HashMap<String, String>) -> Result<SandboxOutput> {
         self.sync_workspace().await?;
         let timeout_ms = (self.timeout_secs * 1000).min(MAX_WORKER_TIMEOUT_MS);
@@ -523,6 +640,8 @@ case "$1 $2" in
   "agent create") printf '{{"id":"agent-1","name":"codewhale"}}' ;;
   "world create") printf '{{"id":"world-1","name":"%s"}}' "$6" ;;
   "world attach") printf '{{"capability":"%s"}}' "$8" ;;
+  "agent spawn") printf '{{"agent":{{"id":"child-1","name":"%s"}},"world":{{"id":"world-child"}}}}' "$8" ;;
+  "agent join") printf '{{"child_agent_id":"%s","provenance_root":"abc"}}' "$4" ;;
   "cap invoke")
     action=invoke; input=""
     while [ $# -gt 0 ]; do
@@ -717,6 +836,50 @@ esac
         let first_sync = log_text.find("--action sync").unwrap();
         let first_invoke = log_text.find("--action invoke").unwrap();
         assert!(first_sync < first_invoke);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_backend_spawns_projected_world_and_joins() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_shannon(dir.path(), true);
+        let parent = ShannonBackend::new(
+            binary,
+            dir.path().join("home"),
+            DEFAULT_CAPABILITY.into(),
+            Path::new("/tmp/proj"),
+            30,
+            false,
+        )
+        .unwrap();
+        let child = parent
+            .for_child("scout", "look for the bug")
+            .unwrap()
+            .expect("shannon backend derives a child");
+        child.exec("ls", &HashMap::new()).await.unwrap();
+        child
+            .child_joined(Some("found it"), 4321, true)
+            .await
+            .unwrap();
+        let log = std::fs::read_to_string(dir.path().join("argv.log")).unwrap();
+        assert!(
+            log.contains("agent spawn --parent codewhale --world world-1 --role scout --objective look for the bug --world-project cap://sandbox/exec"),
+            "{log}"
+        );
+        // The child signs as itself, in its own World — never as the parent.
+        assert!(
+            log.contains("cap invoke --agent child-1 --world world-child --cap cap://sandbox/exec --action invoke"),
+            "{log}"
+        );
+        assert!(!log.contains("cap invoke --agent codewhale"), "{log}");
+        assert!(
+            log.contains(
+                "agent join --child child-1 --tokens 4321 --confidence 1 --conclusion found it"
+            ),
+            "{log}"
+        );
+        assert_eq!(sanitize_role("Code Reviewer!"), "Code-Reviewer");
+        assert_eq!(sanitize_role("///"), "child");
     }
 
     #[test]
