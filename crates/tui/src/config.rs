@@ -3105,6 +3105,11 @@ pub struct Config {
     /// (default: `cap://sandbox/exec`).
     #[serde(alias = "sandboxShannonCapability")]
     pub sandbox_shannon_capability: Option<String>,
+    /// Ship the workspace's non-ignored files to the worker's per-World
+    /// session before each command (default true). False runs commands
+    /// against the worker's own checkout in a throwaway container.
+    #[serde(alias = "sandboxShannonSync")]
+    pub sandbox_shannon_sync: Option<bool>,
     /// When true and `/usr/bin/bwrap` is executable on Linux, route exec_shell
     /// through bubblewrap (#2184).
     /// Defaults to false. Requires the `bubblewrap` package to be installed
@@ -9472,6 +9477,9 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
     if let Ok(value) = std::env::var("CODEWHALE_SANDBOX_SHANNON_CAPABILITY") {
         config.sandbox_shannon_capability = Some(value);
     }
+    if let Ok(value) = std::env::var("CODEWHALE_SANDBOX_SHANNON_SYNC") {
+        config.sandbox_shannon_sync = Some(value == "1" || value.eq_ignore_ascii_case("true"));
+    }
     if let Ok(value) = std::env::var("CODEWHALE_MANAGED_CONFIG_PATH")
         .or_else(|_| std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH"))
     {
@@ -10636,6 +10644,9 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         sandbox_shannon_capability: override_cfg
             .sandbox_shannon_capability
             .or(base.sandbox_shannon_capability),
+        sandbox_shannon_sync: override_cfg
+            .sandbox_shannon_sync
+            .or(base.sandbox_shannon_sync),
         prefer_bwrap: override_cfg.prefer_bwrap.or(base.prefer_bwrap),
         bwrap_ro_roots: if override_cfg.bwrap_ro_roots.is_empty() {
             base.bwrap_ro_roots

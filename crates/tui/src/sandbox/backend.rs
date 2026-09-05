@@ -125,8 +125,9 @@ pub fn create_backend(
                 .clone()
                 .filter(|cap| !cap.trim().is_empty())
                 .unwrap_or_else(|| super::shannon::DEFAULT_CAPABILITY.to_string());
+            let sync = config.sandbox_shannon_sync.unwrap_or(true);
             let backend =
-                super::shannon::ShannonBackend::new(binary, home, capability, workspace, 30)?;
+                super::shannon::ShannonBackend::new(binary, home, capability, workspace, 30, sync)?;
             Ok(Some(Box::new(backend)))
         }
     }

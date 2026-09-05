@@ -74,6 +74,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `shannon trace`. New keys `sandbox_shannon_home` and
   `sandbox_shannon_capability`; tool metadata now reports the actual
   external backend kind instead of always `opensandbox`.
+- Workspace sync for the ShannonNet backend (`sandbox_shannon_sync`, default
+  on): the session's non-ignored files are shipped into the worker's
+  per-World session container before each command — full tree first, then
+  only changes and deletions — so remote builds and tests run on the files
+  just edited locally and their outputs persist across commands.
 
 ## [0.9.12] - 2026-09-03
 

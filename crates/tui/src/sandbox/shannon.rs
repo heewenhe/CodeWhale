@@ -16,14 +16,25 @@
 //! start), resolves or creates the `codewhale` Agent, creates a Task World
 //! named after the workspace, and attaches the sandbox capability. Each
 //! `exec` is one signed invocation in that World.
+//!
+//! Workspace sync: with `sync` on (the default), the backend ships the
+//! session's working tree into the worker's per-World session container
+//! before each command — a full archive first, then only what changed
+//! (added/modified files, deletions) — so remote builds and tests see the
+//! files the Engine just edited locally, not the worker's own checkout.
+//! Ignored files (`.gitignore`, `.git`) never leave the machine. The worker
+//! enforces path safety and size budgets on its side.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::SystemTime;
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use base64::Engine as _;
 use serde_json::{Value, json};
 
 use super::backend::{SandboxBackend, SandboxKind, SandboxOutput};
@@ -32,17 +43,29 @@ use super::backend::{SandboxBackend, SandboxKind, SandboxOutput};
 pub const AGENT_NAME: &str = "codewhale";
 /// Capability invoked for shell execution when the config names none.
 pub const DEFAULT_CAPABILITY: &str = "cap://sandbox/exec";
-/// The ShannonNet docker worker refuses timeouts above one minute.
-const MAX_WORKER_TIMEOUT_MS: u64 = 60_000;
+/// The ShannonNet docker worker refuses command timeouts above 15 minutes.
+const MAX_WORKER_TIMEOUT_MS: u64 = 15 * 60 * 1000;
+/// Raw bytes per sync archive; the worker reads at most 16 MiB per request
+/// and base64 inflates by a third.
+const SYNC_CHUNK_BYTES: u64 = 6 << 20;
+/// Files above this size are not synced (a receipt names them).
+const SYNC_MAX_FILE_BYTES: u64 = 16 << 20;
 
 /// A ShannonNet-backed remote execution backend.
 #[derive(Debug)]
 pub struct ShannonBackend {
-    binary: PathBuf,
-    home: PathBuf,
+    cli: Cli,
     world_id: String,
     capability: String,
     timeout_secs: u64,
+    sync: Option<tokio::sync::Mutex<WorkspaceSync>>,
+}
+
+/// The `shannon` CLI and its state directory.
+#[derive(Debug, Clone)]
+struct Cli {
+    binary: PathBuf,
+    home: PathBuf,
 }
 
 impl ShannonBackend {
@@ -59,8 +82,10 @@ impl ShannonBackend {
         capability: String,
         workspace: &Path,
         timeout_secs: u64,
+        sync: bool,
     ) -> Result<Self> {
-        let run = |args: &[&str]| run_json_blocking(&binary, &home, args);
+        let cli = Cli { binary, home };
+        let run = |args: &[&str]| run_json_blocking(&cli.binary, &cli.home, args);
         if run(&["agent", "inspect", AGENT_NAME]).is_err() {
             run(&["agent", "create", AGENT_NAME])
                 .context("failed to create the codewhale Agent in ShannonNet")?;
@@ -84,24 +109,98 @@ impl ShannonBackend {
             .filter(|id| !id.is_empty())
             .context("ShannonNet world create returned no id")?
             .to_string();
+        // Sync needs the worker's session actions; without sync the grant
+        // stays as narrow as before.
+        let actions = if sync {
+            "invoke,sync,destroy"
+        } else {
+            "invoke"
+        };
         run(&[
             "world",
             "attach",
             "--world",
             &world_id,
             "--actions",
-            "invoke",
+            actions,
             "capability",
             &capability,
         ])
         .with_context(|| format!("failed to attach {capability} to the session World"))?;
         Ok(Self {
-            binary,
-            home,
+            cli,
             world_id,
             capability,
             timeout_secs,
+            sync: sync
+                .then(|| tokio::sync::Mutex::new(WorkspaceSync::new(workspace.to_path_buf()))),
         })
+    }
+
+    fn invoke_args<'a>(&'a self, action: &'a str, input: &'a str) -> Vec<&'a str> {
+        vec![
+            "cap",
+            "invoke",
+            "--agent",
+            AGENT_NAME,
+            "--world",
+            &self.world_id,
+            "--cap",
+            &self.capability,
+            "--action",
+            action,
+            "--input",
+            input,
+        ]
+    }
+
+    /// Ship the working tree's changes to the World's session container.
+    /// Nothing runs on a stale tree: a failed sync fails the command.
+    async fn sync_workspace(&self) -> Result<()> {
+        let Some(sync) = &self.sync else {
+            return Ok(());
+        };
+        let mut guard = sync.lock().await;
+        let root = guard.root.clone();
+        let previous = guard.snapshot.clone();
+        let (delta, current) = tokio::task::spawn_blocking(move || -> Result<_> {
+            let current = WorkspaceSync::list(&root)?;
+            let delta = WorkspaceSync::delta(&root, &previous, &current, SYNC_CHUNK_BYTES)?;
+            Ok((delta, current))
+        })
+        .await
+        .context("workspace sync task")??;
+        if delta.archives.is_empty() && delta.deletes.is_empty() && guard.initialized {
+            return Ok(());
+        }
+        let mut deletes = delta.deletes.clone();
+        let mut requests: Vec<Value> = delta
+            .archives
+            .iter()
+            .map(|archive| json!({"archive_gz_b64": base64::engine::general_purpose::STANDARD.encode(archive)}))
+            .collect();
+        if requests.is_empty() {
+            requests.push(json!({}));
+        }
+        requests[0]["deletes"] = Value::from(std::mem::take(&mut deletes));
+        for request in &requests {
+            let input = request.to_string();
+            let result = run_json(
+                &self.cli.binary,
+                &self.cli.home,
+                &self.invoke_args("sync", &input),
+            )
+            .await
+            .context("ShannonNet workspace sync failed")?;
+            if let Some(err) = result.pointer("/response/error").and_then(Value::as_str)
+                && !err.is_empty()
+            {
+                bail!("ShannonNet workspace sync refused: {err}");
+            }
+        }
+        guard.snapshot = current;
+        guard.initialized = true;
+        Ok(())
     }
 
     /// The Task World this session invokes in (for receipts and inspection).
@@ -109,6 +208,150 @@ impl ShannonBackend {
     pub fn world_id(&self) -> &str {
         &self.world_id
     }
+}
+
+impl Drop for ShannonBackend {
+    /// Best-effort teardown of the worker's session container. Detached: a
+    /// backend may drop inside an async context and must not block; the
+    /// worker's idle reaper covers the case where this never runs.
+    fn drop(&mut self) {
+        if self.sync.is_none() {
+            return;
+        }
+        let args = self.invoke_args("destroy", "{}");
+        let _ = std::process::Command::new(&self.cli.binary)
+            .args(cli_args(&self.cli.home, &args))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+}
+
+/// Stamp of one workspace file: enough to notice a change cheaply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    mtime: SystemTime,
+}
+
+/// What one sync must ship: gzip tar archives (chunked) and deletions.
+#[derive(Debug, Default)]
+struct SyncDelta {
+    archives: Vec<Vec<u8>>,
+    deletes: Vec<String>,
+}
+
+/// Tracks what the worker's session has already received.
+#[derive(Debug)]
+struct WorkspaceSync {
+    root: PathBuf,
+    snapshot: HashMap<PathBuf, Stamp>,
+    initialized: bool,
+}
+
+impl WorkspaceSync {
+    fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            snapshot: HashMap::new(),
+            initialized: false,
+        }
+    }
+
+    /// Regular files under root that are not ignored (`.gitignore`, global
+    /// and local excludes, `.git` itself). Symlinks and oversized files are
+    /// skipped: the worker refuses links and the size budget is finite.
+    fn list(root: &Path) -> Result<HashMap<PathBuf, Stamp>> {
+        let mut out = HashMap::new();
+        let walker = ignore::WalkBuilder::new(root)
+            .hidden(false)
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .require_git(false)
+            .filter_entry(|entry| entry.file_name() != ".git")
+            .build();
+        for entry in walker {
+            let entry = entry.context("walking workspace")?;
+            let Some(ft) = entry.file_type() else {
+                continue;
+            };
+            if !ft.is_file() {
+                continue;
+            }
+            let meta = entry.metadata().context("workspace file metadata")?;
+            if meta.len() > SYNC_MAX_FILE_BYTES {
+                continue;
+            }
+            let rel = entry
+                .path()
+                .strip_prefix(root)
+                .context("workspace path outside root")?
+                .to_path_buf();
+            out.insert(
+                rel,
+                Stamp {
+                    len: meta.len(),
+                    mtime: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                },
+            );
+        }
+        Ok(out)
+    }
+
+    /// Archives for files that are new or changed since `previous`, chunked
+    /// at `chunk_bytes` of raw content, plus the paths that disappeared.
+    fn delta(
+        root: &Path,
+        previous: &HashMap<PathBuf, Stamp>,
+        current: &HashMap<PathBuf, Stamp>,
+        chunk_bytes: u64,
+    ) -> Result<SyncDelta> {
+        let mut changed: Vec<&PathBuf> = current
+            .iter()
+            .filter(|(path, stamp)| previous.get(*path) != Some(*stamp))
+            .map(|(path, _)| path)
+            .collect();
+        changed.sort();
+        let mut deletes: Vec<String> = previous
+            .keys()
+            .filter(|path| !current.contains_key(*path))
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .collect();
+        deletes.sort();
+
+        let mut archives = Vec::new();
+        let mut builder: Option<tar::Builder<flate2::write::GzEncoder<Vec<u8>>>> = None;
+        let mut raw = 0u64;
+        for path in changed {
+            let len = current[path].len;
+            if builder.is_some() && raw + len > chunk_bytes {
+                archives.push(finish_archive(builder.take().unwrap())?);
+                raw = 0;
+            }
+            let b = builder.get_or_insert_with(|| {
+                tar::Builder::new(flate2::write::GzEncoder::new(
+                    Vec::new(),
+                    flate2::Compression::fast(),
+                ))
+            });
+            let name = path.to_string_lossy().replace('\\', "/");
+            b.append_path_with_name(root.join(path), &name)
+                .with_context(|| format!("archiving {name}"))?;
+            raw += len;
+        }
+        if let Some(b) = builder {
+            archives.push(finish_archive(b)?);
+        }
+        Ok(SyncDelta { archives, deletes })
+    }
+}
+
+fn finish_archive(builder: tar::Builder<flate2::write::GzEncoder<Vec<u8>>>) -> Result<Vec<u8>> {
+    let mut gz = builder.into_inner().context("finishing archive")?;
+    gz.flush().context("flushing archive")?;
+    gz.finish().context("compressing archive")
 }
 
 /// World name derived from the workspace path: stable per project, readable
@@ -218,23 +461,13 @@ impl SandboxBackend for ShannonBackend {
     }
 
     async fn exec(&self, cmd: &str, env: &HashMap<String, String>) -> Result<SandboxOutput> {
+        self.sync_workspace().await?;
         let timeout_ms = (self.timeout_secs * 1000).min(MAX_WORKER_TIMEOUT_MS);
         let input = json!({"command": cmd, "env": env, "timeout_ms": timeout_ms}).to_string();
         let result = run_json(
-            &self.binary,
-            &self.home,
-            &[
-                "cap",
-                "invoke",
-                "--agent",
-                AGENT_NAME,
-                "--world",
-                &self.world_id,
-                "--cap",
-                &self.capability,
-                "--input",
-                &input,
-            ],
+            &self.cli.binary,
+            &self.cli.home,
+            &self.invoke_args("invoke", &input),
         )
         .await
         .context("ShannonNet invocation failed")?;
@@ -291,8 +524,15 @@ case "$1 $2" in
   "world create") printf '{{"id":"world-1","name":"%s"}}' "$6" ;;
   "world attach") printf '{{"capability":"%s"}}' "$8" ;;
   "cap invoke")
+    action=invoke; input=""
+    while [ $# -gt 0 ]; do
+      case "$1" in --action) action=$2; shift ;; --input) input=$2; shift ;; esac
+      shift
+    done
+    if [ "$action" = "sync" ]; then printf '{{"response":{{"output":{{"session_id":"s1","files_written":1}}}}}}'; exit 0; fi
+    if [ "$action" = "destroy" ]; then printf '{{"response":{{"output":{{"destroyed":true}}}}}}'; exit 0; fi
     # echo the command back through the docker-kind result shape
-    cmd=$(printf '%s' "${{10}}" | sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
+    cmd=$(printf '%s' "$input" | sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
     if [ "$cmd" = "false" ]; then
       printf '{{"response":{{"output":{{"stdout":"","stderr":"boom","exit_code":1,"ok":false}}}},"route":{{"selected_provider_id":"prov-1"}}}}'
     else
@@ -321,6 +561,7 @@ esac
             DEFAULT_CAPABILITY.to_string(),
             Path::new("/tmp/proj"),
             30,
+            false,
         )
         .unwrap();
         assert_eq!(backend.world_id(), "world-1");
@@ -348,7 +589,7 @@ esac
         );
         assert!(
             lines[4].contains(
-                "cap invoke --agent codewhale --world world-1 --cap cap://sandbox/exec --input"
+                "cap invoke --agent codewhale --world world-1 --cap cap://sandbox/exec --action invoke --input"
             ),
             "{log}"
         );
@@ -367,11 +608,131 @@ esac
             "cap://x".into(),
             Path::new("/p"),
             5,
+            false,
         )
         .unwrap();
         let log = std::fs::read_to_string(dir.path().join("argv.log")).unwrap();
         assert!(!log.contains("agent create"), "{log}");
-        assert!(log.contains("capability cap://x"), "{log}");
+        assert!(log.contains("--actions invoke capability cap://x"), "{log}");
+    }
+
+    /// Entries of every sync archive found in the fake CLI's argv log, in
+    /// order, plus the deletes each sync carried.
+    #[cfg(unix)]
+    fn synced(log_path: &Path) -> Vec<(Vec<String>, Vec<String>)> {
+        use std::io::Read;
+        let log = std::fs::read_to_string(log_path).unwrap();
+        log.lines()
+            .filter(|l| l.contains("--action sync --input "))
+            .map(|l| {
+                let input: Value =
+                    serde_json::from_str(l.split_once("--input ").unwrap().1).unwrap();
+                let deletes = input["deletes"]
+                    .as_array()
+                    .map(|d| d.iter().map(|v| v.as_str().unwrap().to_string()).collect())
+                    .unwrap_or_default();
+                let mut names = Vec::new();
+                if let Some(b64) = input["archive_gz_b64"].as_str() {
+                    let raw = base64::engine::general_purpose::STANDARD
+                        .decode(b64)
+                        .unwrap();
+                    let mut archive =
+                        tar::Archive::new(flate2::read::GzDecoder::new(raw.as_slice()));
+                    for entry in archive.entries().unwrap() {
+                        let mut entry = entry.unwrap();
+                        let mut content = String::new();
+                        entry.read_to_string(&mut content).unwrap();
+                        names.push(format!("{}={content}", entry.path().unwrap().display()));
+                    }
+                }
+                (names, deletes)
+            })
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sync_ships_full_tree_then_only_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = fake_shannon(dir.path(), true);
+        let ws = dir.path().join("ws");
+        std::fs::create_dir_all(ws.join("sub")).unwrap();
+        std::fs::create_dir_all(ws.join(".git")).unwrap();
+        std::fs::write(ws.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+        std::fs::write(ws.join(".gitignore"), "ignored.txt\ntarget/\n").unwrap();
+        std::fs::write(ws.join("a.txt"), "one").unwrap();
+        std::fs::write(ws.join("sub/b.txt"), "two").unwrap();
+        std::fs::write(ws.join("ignored.txt"), "never").unwrap();
+        std::fs::create_dir_all(ws.join("target")).unwrap();
+        std::fs::write(ws.join("target/big.o"), "never").unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", ws.join("link")).unwrap();
+        let backend = ShannonBackend::new(
+            binary,
+            dir.path().join("home"),
+            DEFAULT_CAPABILITY.into(),
+            &ws,
+            30,
+            true,
+        )
+        .unwrap();
+        let log = dir.path().join("argv.log");
+        assert!(
+            std::fs::read_to_string(&log)
+                .unwrap()
+                .contains("--actions invoke,sync,destroy capability")
+        );
+
+        // First command: the whole (non-ignored, non-git, non-link) tree.
+        backend.exec("ls", &HashMap::new()).await.unwrap();
+        let syncs = synced(&log);
+        assert_eq!(syncs.len(), 1, "{syncs:?}");
+        let mut names = syncs[0].0.clone();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                ".gitignore=ignored.txt\ntarget/\n",
+                "a.txt=one",
+                "sub/b.txt=two"
+            ]
+        );
+        assert!(syncs[0].1.is_empty());
+
+        // Unchanged tree: no sync at all.
+        backend.exec("ls", &HashMap::new()).await.unwrap();
+        assert_eq!(synced(&log).len(), 1);
+
+        // One edit and one deletion: exactly those travel.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(ws.join("a.txt"), "one-edited").unwrap();
+        std::fs::remove_file(ws.join("sub/b.txt")).unwrap();
+        backend.exec("ls", &HashMap::new()).await.unwrap();
+        let syncs = synced(&log);
+        assert_eq!(syncs.len(), 2, "{syncs:?}");
+        assert_eq!(syncs[1].0, vec!["a.txt=one-edited"]);
+        assert_eq!(syncs[1].1, vec!["sub/b.txt"]);
+
+        // Every sync precedes its command in the log.
+        let log_text = std::fs::read_to_string(&log).unwrap();
+        let first_sync = log_text.find("--action sync").unwrap();
+        let first_invoke = log_text.find("--action invoke").unwrap();
+        assert!(first_sync < first_invoke);
+    }
+
+    #[test]
+    fn delta_chunks_archives_by_raw_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        for i in 0..5 {
+            std::fs::write(ws.join(format!("f{i}.bin")), vec![b'x'; 100]).unwrap();
+        }
+        let current = WorkspaceSync::list(ws).unwrap();
+        assert_eq!(current.len(), 5);
+        let delta = WorkspaceSync::delta(ws, &HashMap::new(), &current, 250).unwrap();
+        // 5 x 100 bytes at 250 per chunk: 2 + 2 + 1.
+        assert_eq!(delta.archives.len(), 3, "{}", delta.archives.len());
+        let unchanged = WorkspaceSync::delta(ws, &current, &current, 250).unwrap();
+        assert!(unchanged.archives.is_empty() && unchanged.deletes.is_empty());
     }
 
     #[test]
@@ -382,6 +743,7 @@ esac
             "cap://x".into(),
             Path::new("/p"),
             5,
+            false,
         )
         .unwrap_err();
         assert!(err.to_string().contains("codewhale Agent"), "{err}");

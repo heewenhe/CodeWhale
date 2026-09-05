@@ -159,14 +159,28 @@ selects — typically a `shannon-worker --kind docker` or a
 its address. At session start Codewhale resolves its durable `codewhale`
 Agent (creating it once), creates a Task World named after the workspace, and
 attaches the capability; the worker verifies that grant chain, executes in a
-read-only, network-less container, and returns stdout, stderr, and the exit
-code inside a signed receipt. `shannon trace <task>` lists every command with
-the provider and transport evidence that served it.
+network-less, resource-capped container, and returns stdout, stderr, and the
+exit code inside a signed receipt. `shannon trace <task>` lists every command
+with the provider and transport evidence that served it.
+
+With `sandbox_shannon_sync = true` (the default) the worker keeps one
+writable session container per Task World and Codewhale ships the session's
+working tree into it before each command: the full non-ignored tree the
+first time (`.gitignore`, local and global excludes, and `.git` itself are
+honored; symlinks and files over 16 MiB are skipped), then only added or
+modified files and deletions, chunked at 6 MiB per request. Commands run in
+that `/work` with what the Engine just edited locally, and what they write
+persists for the next command, so remote builds and test suites work.
+The worker refuses path traversal, absolute paths, symlinks, and archives
+over its size budget, destroys the session when the backend drops or after
+an idle TTL, and never exposes its own checkout to the session. A failed
+sync fails the command rather than running it on a stale tree.
 
 ```toml
 sandbox_backend = "shannon"
 sandbox_shannon_home = "~/.shannon"                 # default: $SHANNON_HOME or ~/.shannon
 sandbox_shannon_capability = "cap://sandbox/exec"   # default
+sandbox_shannon_sync = true                         # default
 ```
 
 The `shannon` binary comes from `$SHANNON` or `PATH`. Isolation belongs to
@@ -198,7 +212,8 @@ backend:
 
 - `CODEWHALE_SANDBOX_MODE`
 - `CODEWHALE_SANDBOX_BACKEND`
-- `CODEWHALE_SANDBOX_SHANNON_HOME`, `CODEWHALE_SANDBOX_SHANNON_CAPABILITY`
+- `CODEWHALE_SANDBOX_SHANNON_HOME`, `CODEWHALE_SANDBOX_SHANNON_CAPABILITY`,
+  `CODEWHALE_SANDBOX_SHANNON_SYNC`
 - `CODEWHALE_SANDBOX_URL`
 - `CODEWHALE_SANDBOX_API_KEY`
 

@@ -436,8 +436,14 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 #   sandbox_backend = "shannon"
 #   sandbox_shannon_home = "~/.shannon"           # default: $SHANNON_HOME or ~/.shannon
 #   sandbox_shannon_capability = "cap://sandbox/exec"  # default
+#   sandbox_shannon_sync = true                   # default: ship the workspace's
+#       # non-ignored files into the worker's per-World session container before
+#       # each command (a full archive first, then only changes), so remote builds
+#       # and tests run on the files just edited here. false runs each command in
+#       # a throwaway container against the worker's own read-only checkout.
 #
-# Env-var overrides: CODEWHALE_SANDBOX_SHANNON_HOME, CODEWHALE_SANDBOX_SHANNON_CAPABILITY.
+# Env-var overrides: CODEWHALE_SANDBOX_SHANNON_HOME, CODEWHALE_SANDBOX_SHANNON_CAPABILITY,
+# CODEWHALE_SANDBOX_SHANNON_SYNC.
 # ─────────────────────────────────────────────────────────────────────────────────
 # Bubblewrap (Linux only, additional filesystem isolation)
 # ─────────────────────────────────────────────────────────────────────────────────
