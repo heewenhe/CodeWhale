@@ -6549,6 +6549,121 @@ mod tests {
         assert!(matches!(unknown.source, CatalogSource::Live { .. }));
     }
 
+    /// A Codewhale-route client pointed at a loopback stub.
+    ///
+    /// `base_url` goes through the provider table rather than
+    /// `CODEWHALE_API_BASE` so the test does not mutate process env, but it
+    /// exercises the same "declared origin" path: the key must follow the
+    /// route to whatever origin the operator pointed it at.
+    fn codewhale_client(server: &MockServer, model: &str) -> DeepSeekClient {
+        let config = Config {
+            provider: Some("codewhale".to_string()),
+            providers: Some(ProvidersConfig {
+                codewhale: ProviderConfig {
+                    api_key: Some("cwc_key_test_value".to_string()),
+                    base_url: Some(server.uri()),
+                    model: Some(model.to_string()),
+                    ..ProviderConfig::default()
+                },
+                ..ProvidersConfig::default()
+            }),
+            ..Config::default()
+        };
+        DeepSeekClient::new(&config).expect("Codewhale client should resolve its model route")
+    }
+
+    /// The account key must ride as `Authorization: Bearer` and never as
+    /// `x-api-key`, on both protocols the account API serves.
+    fn assert_codewhale_bearer(request: &wiremock::Request) {
+        assert_eq!(
+            request
+                .headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer cwc_key_test_value")
+        );
+        assert!(
+            request.headers.get("x-api-key").is_none(),
+            "the Codewhale API does not accept x-api-key"
+        );
+    }
+
+    #[tokio::test]
+    async fn codewhale_chat_request_carries_the_account_bearer() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl_cw",
+                "object": "chat.completion",
+                "model": "deepseek/deepseek-v4-pro",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = codewhale_client(&server, "deepseek/deepseek-v4-pro");
+        assert_eq!(client.wire_format, WireFormat::ChatCompletions);
+        client
+            .create_message(minimal_zen_request("deepseek/deepseek-v4-pro"))
+            .await
+            .expect("Codewhale chat request should succeed");
+
+        let requests = server.received_requests().await.expect("recorded request");
+        assert_eq!(requests.len(), 1);
+        assert_codewhale_bearer(&requests[0]);
+        let body: Value = serde_json::from_slice(&requests[0].body).expect("chat JSON body");
+        // Model ids reach the account API exactly as its catalog returns them.
+        assert_eq!(
+            body.get("model").and_then(Value::as_str),
+            Some("deepseek/deepseek-v4-pro")
+        );
+    }
+
+    #[tokio::test]
+    async fn codewhale_messages_request_carries_the_account_bearer_not_x_api_key() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_cw",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "ok"}],
+                "model": "anthropic/claude-sonnet-5",
+                "stop_reason": "end_turn",
+                "stop_sequence": null,
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = codewhale_client(&server, "anthropic/claude-sonnet-5");
+        assert_eq!(client.wire_format, WireFormat::AnthropicMessages);
+        client
+            .create_message(minimal_zen_request("anthropic/claude-sonnet-5"))
+            .await
+            .expect("Codewhale messages request should succeed");
+
+        let requests = server.received_requests().await.expect("recorded request");
+        assert_eq!(requests.len(), 1);
+        assert_codewhale_bearer(&requests[0]);
+        assert_eq!(
+            requests[0]
+                .headers
+                .get("anthropic-version")
+                .and_then(|value| value.to_str().ok()),
+            Some("2023-06-01")
+        );
+    }
+
     fn opencode_zen_client(server: &MockServer, model: &str) -> DeepSeekClient {
         let config = Config {
             provider: Some("opencode-zen".to_string()),

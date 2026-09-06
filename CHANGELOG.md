@@ -75,8 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the account's authenticated `GET /v1/models`: ids are `provider/model` and
   each row states `chat-completions` (`/v1/chat/completions`) or
   `anthropic-messages` (`/v1/messages`). Both protocols authenticate with
-  `Authorization: Bearer`, never `x-api-key`. If the catalog cannot be fetched
-  the route falls back to three bootstrap ids and says so.
+  `Authorization: Bearer`, never `x-api-key`. The key is read from
+  `CODEWHALE_API_KEY`, the `codewhale` secret-store slot, or
+  `[providers.codewhale] api_key` / `api_key_env`, and a missing key fails
+  before any request instead of dispatching unauthenticated. If the catalog
+  cannot be fetched the route falls back to three bootstrap ids and says so.
 - `codewhale account api-keys create --scope` now accepts `models:infer`
   alongside `account:read` and `agent:run`, and an omitted `--scope` sends all
   three explicitly. `--use` saves the new secret as this machine's local

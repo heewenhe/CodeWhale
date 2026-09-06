@@ -6762,6 +6762,14 @@ impl Config {
             return false;
         }
 
+        // The Codewhale API is authenticated on every origin it is allowed to
+        // reach. A loopback `CODEWHALE_API_BASE` is a test origin for that
+        // same contract, not a keyless local runtime, so it must not suppress
+        // the route's saved or exported key.
+        if provider == ApiProvider::Codewhale {
+            return false;
+        }
+
         provider_route_is_keyless_self_hosted(provider, &self.base_url_for_route(provider))
             || (provider == self.api_provider()
                 && base_url_uses_local_host(&self.deepseek_base_url()))
@@ -7011,7 +7019,13 @@ impl Config {
             }
         }
 
-        if !auth_mode_requires_api_key(auth_mode.as_deref())
+        // The Codewhale API always authenticates. It is not a self-hosted
+        // runtime, and a loopback `CODEWHALE_API_BASE` is a test origin for
+        // the same authenticated contract — never a keyless one. Without this
+        // the loopback arm below returned an empty key and the request went
+        // out with no `Authorization` header at all.
+        if provider != ApiProvider::Codewhale
+            && !auth_mode_requires_api_key(auth_mode.as_deref())
             && (provider_route_is_keyless_self_hosted(provider, &self.deepseek_base_url())
                 || base_url_uses_local_host(&self.deepseek_base_url()))
         {
@@ -7030,6 +7044,23 @@ impl Config {
         }
 
         match provider {
+            ApiProvider::Codewhale => anyhow::bail!(
+                "Codewhale API key not found, so no request was sent.\n\
+                 \n\
+                 The Codewhale API authenticates every model with one account \
+                 API key carrying the `models:infer` scope.\n\
+                 \n\
+                 1. Create one and save it on this machine:\n\
+                        codewhale account api-keys create --name <name> --scope models:infer --use\n\
+                 2. Or export it for this shell:\n\
+                        export CODEWHALE_API_KEY=cwc_key_...\n\
+                 \n\
+                 You can also create a key at {} and put it in \
+                 [providers.codewhale] api_key (or api_key_env).",
+                provider
+                    .credential_url()
+                    .unwrap_or("https://app.codewhale.net/settings?section=api")
+            ),
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => anyhow::bail!(
                 "DeepSeek API key not found.\n\
                  \n\

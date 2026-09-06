@@ -4875,6 +4875,19 @@ pub fn provider_base_url_is_official(provider: ProviderKind, base_url: &str) -> 
             "https://api.edenai.run/v3" | "https://api.eu.edenai.run/v3"
         ),
         ProviderKind::Concentrate => normalized == DEFAULT_CONCENTRATE_BASE_URL,
+        // The Codewhale API's official endpoint family is its default base
+        // plus whatever the operator declared in `CODEWHALE_API_BASE` — the
+        // route's own documented override, already validated as HTTPS or
+        // loopback, and the exact shape `CODEWHALE_CLOUD_API_BASE` has for the
+        // account surface. Treating that declared origin as "custom" is what
+        // silently stripped the account bearer and dispatched unauthenticated.
+        // A base URL from anywhere else stays custom and keyless.
+        ProviderKind::Codewhale => {
+            normalized == DEFAULT_CODEWHALE_BASE_URL
+                || provider::codewhale_api_base_from_env().is_some_and(|declared| {
+                    normalized == declared.trim_end_matches('/').to_ascii_lowercase()
+                })
+        }
         // Custom routes have no Codewhale-owned official endpoint. The
         // descriptor URL is a schema placeholder, never a credential scope.
         ProviderKind::Custom => false,
@@ -4915,6 +4928,12 @@ fn should_skip_secret_store_for_provider(
         return true;
     }
     if auth_mode_requires_api_key(auth_mode) {
+        return false;
+    }
+    // The Codewhale API authenticates on every origin it is allowed to reach,
+    // including the loopback test origin `CODEWHALE_API_BASE` may name. It is
+    // never a keyless local runtime.
+    if provider == ProviderKind::Codewhale {
         return false;
     }
 
