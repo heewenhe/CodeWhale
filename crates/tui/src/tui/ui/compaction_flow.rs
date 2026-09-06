@@ -316,6 +316,18 @@ pub(crate) fn apply_compaction_completed(
                 anchors_chars: crate::compaction::pinned_anchors_text(Some(&app.workspace))
                     .map(|text| text.chars().count())
                     .unwrap_or(0),
+                // Only the summary path builds a replacement history, so only
+                // it spent a verbatim budget (#5956).
+                retained_user_message_tokens: match path {
+                    crate::compaction::CompactionPath::Summary => {
+                        app.compaction_retained_user_message_tokens
+                    }
+                    crate::compaction::CompactionPath::PruneOnly => 0,
+                },
+                operator_instructions_applied: matches!(
+                    path,
+                    crate::compaction::CompactionPath::Summary
+                ) && app.compaction_summary_instructions.is_some(),
             },
             messages_before: before,
             messages_after: after,
@@ -549,6 +561,9 @@ mod config_update_tests {
             runtime_cost_owner: None,
             workspace: None,
             image_input: crate::model_profile::SupportState::Unknown,
+            summary_instructions: None,
+            retained_user_message_tokens:
+                crate::config::DEFAULT_COMPACTION_RETAINED_USER_MESSAGE_TOKENS,
         };
 
         assert!(try_apply_model_and_compaction_update(

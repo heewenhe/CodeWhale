@@ -215,6 +215,10 @@ pub(crate) async fn plan_turn_route(
             &turn_route.model,
             turn_route_limits,
         )),
+        summary_instructions: request.route_config.compaction_summary_instructions(),
+        retained_user_message_tokens: request
+            .route_config
+            .compaction_retained_user_message_tokens(),
         ..Default::default()
     };
 

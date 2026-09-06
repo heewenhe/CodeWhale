@@ -1459,6 +1459,8 @@ mod tests {
                 last_round_assistant: true,
                 dropped_messages: 12,
                 anchors_chars: 0,
+                retained_user_message_tokens: 20_000,
+                operator_instructions_applied: false,
             },
             messages_before: 16,
             messages_after: 4,

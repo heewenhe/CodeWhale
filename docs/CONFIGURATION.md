@@ -852,6 +852,10 @@ window it cannot justify — it falls back to a conservative value, labels it
   absolute compaction point along with it.
 - `auto_compact` (settings.toml, on/off): turns automatic compaction off
   entirely; `/compact` and Ctrl+L stay available.
+- `[compaction] summary_instructions` and
+  `[compaction] retained_user_message_tokens` (config.toml): standing
+  summarizer instructions and the verbatim user-message retention budget. See
+  the `compaction.*` entry in the config-key reference below.
 - `CODEWHALE_MAX_OUTPUT_TOKENS` (environment variable; legacy alias
   `DEEPSEEK_MAX_OUTPUT_TOKENS`): overrides the requested output cap. Without an
   override, Codewhale starts at the safe `65536` request cap and intersects it
@@ -2184,6 +2188,28 @@ reasoning contract, and all four membership ids omit generic sampling fields.
   - The former seam-manager keys (`verbatim_window_turns`, `l1_threshold`,
     `l2_threshold`, `l3_threshold`, `seam_model`) are **ignored** — parsed
     for backward compatibility but read nowhere since 2026-07-23.
+- `compaction.*` (optional, config.toml): how a compaction pass behaves once
+  it fires. `auto_compact` / `auto_compact_threshold_percent` (settings.toml)
+  still decide *when* it fires. Both keys are absent by default, and absent
+  means the built-in behaviour, unchanged:
+  - `[compaction].summary_instructions` (string, default empty): standing
+    operator instructions appended to the summarizer prompt as a clearly
+    delimited "Additional instructions from the operator" section on **every**
+    pass, manual and automatic — the effort-free counterpart to a one-off
+    `/compact <focus>`, which still composes after this text. Useful for
+    "always list exact file paths and line numbers", "always restate open
+    decisions and their trade-offs", "always write a TL;DR first". Truncated
+    at 4 000 characters with a warning naming the key; whitespace-only reads
+    as unset. The summarizer still runs with no system prompt and no tools —
+    this suffix is the only operator-authored input it sees.
+  - `[compaction].retained_user_message_tokens` (int, default `20000`, clamped
+    to `2000`–`200000`; also accepted as `retained_user_message_max_tokens`):
+    token budget for the recent plain user messages kept **verbatim** in the
+    replacement history. Raising it keeps more of the user's own earlier
+    messages instead of only whatever the lossy summary captured; the
+    last-round survival contract still applies on top. The `/compact` receipt
+    names the effective budget and whether operator instructions were applied,
+    so you can tell the knob took effect.
 - `retry.*` (optional): retry/backoff settings for API requests:
   - `[retry].enabled` (bool, default `true`)
   - `[retry].max_retries` (int, default `3`)

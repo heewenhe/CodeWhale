@@ -262,6 +262,9 @@ impl App {
         let settings_auto_compact = settings.auto_compact;
         let auto_compact_user_configured = Settings::auto_compact_explicitly_configured();
         let auto_compact_threshold_percent = settings.auto_compact_threshold_percent;
+        let compaction_summary_instructions = config.compaction_summary_instructions();
+        let compaction_retained_user_message_tokens =
+            config.compaction_retained_user_message_tokens();
         let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
         let constrained_frame_rate = settings.constrained_frame_rate;
@@ -858,6 +861,8 @@ impl App {
             auto_compact,
             auto_compact_user_configured,
             auto_compact_threshold_percent,
+            compaction_summary_instructions,
+            compaction_retained_user_message_tokens,
             stopped_turn: false,
             calm_mode,
             low_motion,

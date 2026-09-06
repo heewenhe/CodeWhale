@@ -13658,3 +13658,63 @@ fn picker_and_request_path_disagree_when_the_secret_slot_marker_is_missing() -> 
     println!("CAPTURED first-fix: {:?}", resolution.first_fix());
     Ok(())
 }
+
+/// #5956: `[compaction]` is absent by default, and absent must mean the
+/// historical hard-coded 20 000-token verbatim retention budget with no
+/// operator prompt suffix.
+#[test]
+fn compaction_tuning_defaults_to_todays_behavior() {
+    let config = Config::default();
+    assert_eq!(
+        config.compaction_retained_user_message_tokens(),
+        DEFAULT_COMPACTION_RETAINED_USER_MESSAGE_TOKENS
+    );
+    assert_eq!(config.compaction_retained_user_message_tokens(), 20_000);
+    assert_eq!(config.compaction_summary_instructions(), None);
+}
+
+/// #5956: an explicit budget is honored inside the clamp and pulled back to
+/// the nearest bound outside it, so neither a useless floor nor a
+/// re-triggering ceiling can be configured.
+#[test]
+fn compaction_retained_user_message_tokens_clamps_to_the_documented_range() {
+    let parse = |body: &str| toml::from_str::<Config>(body).expect("config parses");
+
+    let in_range = parse("[compaction]\nretained_user_message_tokens = 60000\n");
+    assert_eq!(in_range.compaction_retained_user_message_tokens(), 60_000);
+
+    let too_small = parse("[compaction]\nretained_user_message_tokens = 1\n");
+    assert_eq!(
+        too_small.compaction_retained_user_message_tokens(),
+        MIN_COMPACTION_RETAINED_USER_MESSAGE_TOKENS
+    );
+
+    let too_large = parse("[compaction]\nretained_user_message_tokens = 9000000\n");
+    assert_eq!(
+        too_large.compaction_retained_user_message_tokens(),
+        MAX_COMPACTION_RETAINED_USER_MESSAGE_TOKENS
+    );
+
+    // The pre-#5956 issue text spelled the key `retained_user_message_max_tokens`;
+    // it stays accepted as an alias so early adopters' files keep working.
+    let alias = parse("[compaction]\nretained_user_message_max_tokens = 40000\n");
+    assert_eq!(alias.compaction_retained_user_message_tokens(), 40_000);
+}
+
+/// #5956: a blank or whitespace-only key must read as unset, not as an empty
+/// delimited section appended to every summarizer prompt.
+#[test]
+fn compaction_summary_instructions_trims_and_treats_blank_as_unset() {
+    let configured: Config = toml::from_str(
+        "[compaction]\nsummary_instructions = \"  Always list exact file:line.  \"\n",
+    )
+    .expect("config parses");
+    assert_eq!(
+        configured.compaction_summary_instructions().as_deref(),
+        Some("Always list exact file:line.")
+    );
+
+    let blank: Config = toml::from_str("[compaction]\nsummary_instructions = \"   \\n \"\n")
+        .expect("config parses");
+    assert_eq!(blank.compaction_summary_instructions(), None);
+}

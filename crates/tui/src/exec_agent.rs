@@ -155,6 +155,8 @@ pub(crate) async fn run_exec_agent(
             active_route_limits,
             settings.auto_compact_threshold_percent,
         ),
+        summary_instructions: execution_config.compaction_summary_instructions(),
+        retained_user_message_tokens: execution_config.compaction_retained_user_message_tokens(),
         ..Default::default()
     };
 

@@ -2918,6 +2918,7 @@ fn resolve_runtime_thread_route_for_identity(
 }
 
 fn runtime_compaction_config(
+    config: &Config,
     provider: ApiProvider,
     model: &str,
     route_limits: Option<codewhale_config::route::RouteLimits>,
@@ -2939,6 +2940,8 @@ fn runtime_compaction_config(
             threshold_percent,
         ),
         effective_context_window: Some(route_context_window_tokens(provider, model, route_limits)),
+        summary_instructions: config.compaction_summary_instructions(),
+        retained_user_message_tokens: config.compaction_retained_user_message_tokens(),
         ..Default::default()
     }
 }
@@ -3390,6 +3393,7 @@ impl RuntimeThreadManager {
             let provider = route.identity.provider;
             let route_limits = known_route_limits(route.candidate.limits());
             let mut engine_compaction = runtime_compaction_config(
+                &route.config,
                 provider,
                 &route.model,
                 route_limits,
@@ -7250,6 +7254,7 @@ impl RuntimeThreadManager {
         let route_limits = known_route_limits(route.candidate.limits());
         let settings = crate::settings::Settings::load().unwrap_or_default();
         let mut compaction = runtime_compaction_config(
+            &route.config,
             provider,
             &model,
             route_limits,
@@ -7663,6 +7668,7 @@ impl RuntimeThreadManager {
         let route_limits = known_route_limits(route.candidate.limits());
         let settings = crate::settings::Settings::load().unwrap_or_default();
         let mut compaction = runtime_compaction_config(
+            &route.config,
             route_provider,
             &route_model,
             route_limits,
@@ -7915,6 +7921,7 @@ impl RuntimeThreadManager {
             // user persisted an explicit preference.
             let settings = crate::settings::Settings::load().unwrap_or_default();
             let compaction = runtime_compaction_config(
+                &cfg,
                 provider,
                 &route_model,
                 route_limits,
