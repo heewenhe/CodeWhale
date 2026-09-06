@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answerable work and no longer inflates the `blocked` chip; the receipts
   roster and the wire `state` gain `parked` (#5906, #5921).
 
+
+- `codewhale account keys set|remove|list` no longer carry a hardcoded
+  eight-provider list. Provider ids come from the control plane's public
+  catalog (`GET /api/model-providers`), are validated locally against
+  `^[a-z0-9][a-z0-9-]{0,63}$` before they reach a URL path, and `list` shows
+  every catalog provider with its label and stored-key state. `--from-local`
+  maps a catalog row onto the local runtime provider through the catalog's own
+  `runtimeProvider` field, so a newly supported provider needs no CLI release.
+
 ### Fixed
 
 - The posture bar states how long the session has been working and how long
@@ -108,16 +117,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-World session container before each command — full tree first, then
   only changes and deletions — so remote builds and tests run on the files
   just edited locally and their outputs persist across commands.
-
-### Changed
-
-- `codewhale account keys set|remove|list` no longer carry a hardcoded
-  eight-provider list. Provider ids come from the control plane's public
-  catalog (`GET /api/model-providers`), are validated locally against
-  `^[a-z0-9][a-z0-9-]{0,63}$` before they reach a URL path, and `list` shows
-  every catalog provider with its label and stored-key state. `--from-local`
-  maps a catalog row onto the local runtime provider through the catalog's own
-  `runtimeProvider` field, so a newly supported provider needs no CLI release.
 
 ## [0.9.12] - 2026-09-03
 

@@ -28,25 +28,39 @@ export const CHANGELOG: ChangelogRelease[] = [
     "compareUrl": "https://github.com/Hmbown/CodeWhale/compare/v0.9.12...HEAD",
     "sections": [
       {
+        "heading": "Changed",
+        "items": [
+          "/statusline drives the bottom chrome again. Since the 0.9.12 shell redesign the posture bar and the metrics line were built independently of tui.status_items, so every toggle in the picker except the balance fetch was decoration. Each remaining item now shows or hides exactly one thing: model, context_percent, cost, balance, cache, tokens and session_metrics are metrics-line segments, and mode is the posture bar's plan/act/operate chip. The status, agents, reasoning_replay,…",
+          "The context reading is back on screen at every fullness. 0.9.12 painted ctx NN% only from 50% up, which left most of a session with no context signal at all; it now paints from 0% and keeps its warning colour from 80% up (#5950).",
+          "A child agent parked because its parent's turn ended is shown as parked in the Agents panel, the sidebar and Agent Details, with resume_from / cancel as the recovery, instead of wearing the same \"waiting for input\" label as a child that asked a question. Parked work sorts below live and answerable work and no longer inflates the blocked chip; the receipts roster and the wire state gain parked (#5906, #5921).",
+          "codewhale account keys set|remove|list no longer carry a hardcoded eight-provider list. Provider ids come from the control plane's public catalog (GET /api/model-providers), are validated locally against ^[a-z0-9][a-z0-9-]{0,63}$ before they reach a URL path, and list shows every catalog provider with its label and stored-key state. --from-local maps a catalog row onto the local runtime provider through the catalog's own runtimeProvider field, so a newly supported provider…"
+        ],
+        "itemCount": 4
+      },
+      {
+        "heading": "Fixed",
+        "items": [
+          "The posture bar states how long the session has been working and how long the current turn has run, distinguishing actively working from waiting on a tool, a sub-agent or the operator; the 0.9.12 shell had dropped the overall working-time indicator from the place a glancing user checks (#5914)."
+        ],
+        "itemCount": 1
+      },
+      {
         "heading": "Added",
         "items": [
           "The /theme picker now discovers valid user-authored custom:<name> overlays, previews their colors, highlights the active overlay, and preserves it when the picker is opened and committed without navigation (#5901).",
+          "Compaction has two standing knobs next to [context] in config.toml: [compaction] summary_instructions (appended to the summarizer prompt on every manual and automatic pass; /compact <focus> still composes after it) and [compaction] retained_user_message_tokens (default 20 000, clamped 2 000..=200 000) for the verbatim user-message budget. Both are absent by default and absent means the pre-existing behavior. The /compact receipt names the effective budget and whether…",
+          "[tools] user_input_max_questions (default 6, 1..=10) and [tools] user_input_max_options (default 4, 2..=10) replace the hard-coded request_user_input limits; the validator, the tool schema and its description read one value, spawned children inherit the parent's ceilings, and a rejected payload names the ceiling it hit and the key to raise (#5949).",
+          "The slash menu shows a command's usage line and its subcommands as soon as a space is typed after the verb, filtered by what follows, so Tab completes /workspace wor to /workspace worktrees; /help states the focused command's usage in its detail slot (#5952).",
+          "The three /fleet views (roster, live workers, saved teams) are one back-navigable stack: Esc in workers or saved teams returns to the roster with its cursor intact and still closes the window at the root or on direct entry; the Esc footer hint says back or close accordingly (#5954).",
+          "/fleet presents its prioritized core (members, setup, teams, workers, help); every other verb stays dispatchable and is documented under explicit groups in /fleet help. The roster no longer shows the untouched built-in general alias next to worker (#5888).",
           "codewhale provider: account-backed model access over the provider keys a customer connected to their Codewhale account. One base URL (https://api.codewhale.net/v1, overridable with CODEWHALE_API_BASE; HTTPS required except on loopback), one cwc_key_… account API key with the models:infer scope (CODEWHALE_API_KEY), and a per-model wire chosen from the account's authenticated GET /v1/models: ids are provider/model and each row states chat-completions (/v1/chat/completions) or…",
           "codewhale account api-keys create --scope now accepts models:infer alongside account:read and agent:run, and an omitted --scope sends all three explicitly. --use saves the new secret as this machine's local codewhale provider credential in the same secret store codewhale auth uses; nothing is uploaded.",
           "sandbox_backend = \"shannon\": shell commands run as signed ShannonNet capability invocations (cap://sandbox/exec) on a worker that may live on another tailnet node. Codewhale opens a Task World per session for its durable codewhale Agent and every command leaves a receipt in shannon trace. New keys sandbox_shannon_home and sandbox_shannon_capability; tool metadata now reports the actual external backend kind instead of always opensandbox.",
           "/shannon [world|trace|children] inspects the session's ShannonNet World: agent, projected capabilities, children, and receipts.",
           "ShannonNet sub-agents get compiled context: the session's native-memory hits are imported with provenance and the child's projected World decides what it sees (confidential notes never cross); the session World is checkpointed and closed when the backend drops.",
-          "Sub-agents under delegated authority: with the ShannonNet backend the agent tool spawns a child identity with a World projected from the session World, the child's shell commands are signed as that child, and a join receipt is recorded when it finishes. SandboxBackend::for_child / child_joined default to sharing the parent backend for other backends.",
-          "Workspace sync for the ShannonNet backend (sandbox_shannon_sync, default on): the session's non-ignored files are shipped into the worker's per-World session container before each command — full tree first, then only changes and deletions — so remote builds and tests run on the files just edited locally and their outputs persist across commands."
+          "Sub-agents under delegated authority: with the ShannonNet backend the agent tool spawns a child identity with a World projected from the session World, the child's shell commands are signed as that child, and a join receipt is recorded when it finishes. SandboxBackend::for_child / child_joined default to sharing the parent backend for other backends."
         ],
-        "itemCount": 8
-      },
-      {
-        "heading": "Changed",
-        "items": [
-          "codewhale account keys set|remove|list no longer carry a hardcoded eight-provider list. Provider ids come from the control plane's public catalog (GET /api/model-providers), are validated locally against ^[a-z0-9][a-z0-9-]{0,63}$ before they reach a URL path, and list shows every catalog provider with its label and stored-key state. --from-local maps a catalog row onto the local runtime provider through the catalog's own runtimeProvider field, so a newly supported provider…"
-        ],
-        "itemCount": 1
+        "itemCount": 13
       }
     ]
   },
