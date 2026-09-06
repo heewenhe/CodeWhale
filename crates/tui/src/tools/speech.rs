@@ -43,6 +43,9 @@ pub struct SpeechTool {
     name: &'static str,
     client: Option<DeepSeekClient>,
     output_dir: Option<PathBuf>,
+    /// The canonical `speech` entry is model-visible; `tts` is a hidden
+    /// compat alias so one capability costs one catalog entry (#5941).
+    visible: bool,
 }
 
 impl SpeechTool {
@@ -56,6 +59,23 @@ impl SpeechTool {
             name,
             client,
             output_dir,
+            visible: true,
+        }
+    }
+
+    /// A hidden alias for saved-transcript replay: same behaviour, not
+    /// advertised to the model.
+    #[must_use]
+    pub fn alias(
+        name: &'static str,
+        client: Option<DeepSeekClient>,
+        output_dir: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            name,
+            client,
+            output_dir,
+            visible: false,
         }
     }
 }
@@ -66,8 +86,12 @@ impl ToolSpec for SpeechTool {
         self.name
     }
 
+    fn model_visible(&self) -> bool {
+        self.visible
+    }
+
     fn description(&self) -> &str {
-        "Generate speech/audio directly through the configured Xiaomi MiMo OpenAI-compatible API. Use this when the user asks for speech, TTS, narration, read-aloud, voice design, or voice cloning."
+        "Generate speech/audio through the configured speech (TTS) provider. Use this when the user asks for speech, TTS, narration, read-aloud, voice design, or voice cloning. The provider decides which models and voices exist; omit model to take its default."
     }
 
     fn input_schema(&self) -> Value {
@@ -76,7 +100,7 @@ impl ToolSpec for SpeechTool {
             "properties": {
                 "text": {
                     "type": "string",
-                    "description": "Text to synthesize. This is sent as the assistant message and is the spoken content; MiMo TTS style/audio tags may be included here."
+                    "description": "Text to synthesize; the spoken content. Provider style/audio tags may be included when the configured provider supports them."
                 },
                 "output": {
                     "type": "string",
@@ -88,12 +112,12 @@ impl ToolSpec for SpeechTool {
                 },
                 "model": {
                     "type": "string",
-                    "description": "TTS model. Defaults to mimo-v2.5-tts, or infers voice-design/voice-clone models from voice_prompt/clone_voice.",
+                    "description": "TTS model. Omit to take the configured provider's default, or its voice-design/voice-clone model when voice_prompt/clone_voice is set (for the MiMo provider: mimo-v2.5-tts and variants).",
                     "enum": SPEECH_MODEL_EXAMPLES
                 },
                 "voice": {
                     "type": "string",
-                    "description": "Built-in voice ID (for example mimo_default, 冰糖, 茉莉, 苏打, 白桦, Mia, Chloe, Milo, Dean) or a data:audio/...;base64,... URI for voice clone."
+                    "description": "Built-in voice ID from the configured provider (MiMo examples: mimo_default, 冰糖, 茉莉, 苏打, 白桦, Mia, Chloe, Milo, Dean) or a data:audio/...;base64,... URI for voice clone."
                 },
                 "instruction": {
                     "type": "string",
@@ -101,15 +125,15 @@ impl ToolSpec for SpeechTool {
                 },
                 "voice_prompt": {
                     "type": "string",
-                    "description": "Voice design prompt. When model is omitted this uses mimo-v2.5-tts-voicedesign."
+                    "description": "Voice design prompt. When model is omitted the provider's voice-design model is used (MiMo: mimo-v2.5-tts-voicedesign)."
                 },
                 "clone_voice": {
                     "type": "string",
-                    "description": "Path to a .mp3 or .wav voice sample for cloning. When model is omitted this uses mimo-v2.5-tts-voiceclone."
+                    "description": "Path to a .mp3 or .wav voice sample for cloning. When model is omitted the provider's voice-clone model is used (MiMo: mimo-v2.5-tts-voiceclone)."
                 },
                 "format": {
                     "type": "string",
-                    "description": "Requested audio format. Default: wav. MiMo-V2.5-TTS documentation examples use wav and pcm16; mp3 is accepted when the API returns it.",
+                    "description": "Requested audio format. Default: wav. Providers commonly document wav and pcm16; mp3 is accepted when the API returns it.",
                     "enum": SUPPORTED_SPEECH_FORMATS
                 },
                 "stream": {

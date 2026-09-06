@@ -1048,7 +1048,8 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RevertTurnTool))
     }
 
-    /// Include Xiaomi MiMo speech/TTS tools (`speech`, `tts`).
+    /// Include the speech/TTS tool: `speech` is model-visible, `tts` is a
+    /// hidden compat alias for saved-transcript replay (#5941).
     #[must_use]
     pub fn with_speech_tools(
         self,
@@ -1061,7 +1062,7 @@ impl ToolRegistryBuilder {
             client.clone(),
             output_dir.clone(),
         )))
-        .with_tool(Arc::new(SpeechTool::new("tts", client, output_dir)))
+        .with_tool(Arc::new(SpeechTool::alias("tts", client, output_dir)))
     }
 
     /// Include the canonical persistent RLM session tool.
@@ -1289,8 +1290,13 @@ impl ToolRegistryBuilder {
             .with_review_tool(client.clone(), model.clone())
             .with_rlm_tool(client.clone(), model.clone())
             .with_harness_tool()
-            .with_fim_tool(client, model)
-            .with_speech_tools(speech_client, options.speech_output_dir.clone());
+            .with_fim_tool(client, model);
+
+        // No client means no speech provider to call: do not advertise a
+        // capability the session cannot deliver (#5941).
+        if speech_client.is_some() {
+            builder = builder.with_speech_tools(speech_client, options.speech_output_dir.clone());
+        }
 
         if options.verify_tool_enabled {
             builder = builder.with_verify_tool(verify_client, verify_model);
