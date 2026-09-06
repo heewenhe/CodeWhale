@@ -1431,6 +1431,7 @@
   "ProviderExternalPinnedPathWarning": "Warnung: Umgebungs-{owner}-Zugangsdatenpfad geändert; Einwilligung bleibt an {path} gebunden.",
   "ToolProjectionWarning": "Warnung: {provider} hat für diese Anfrage inkompatible Werkzeuge ausgelassen: {tools}",
   "SnapshotsDisabledNotice": "Snapshots und /undo sind für {workspace} aus: {reason} Erhöhe `{config_key}` in config.toml (oder setze es auf 0, um die Grenze aufzuheben), um sie einzuschalten.",
+  "SessionIdDivergedNotice": "Die Sitzungsidentität unter diesem Fenster hat sich geändert: Die Engine speichert Checkpoints jetzt als {next} (vorher {previous}). Frühere Checkpoints bleiben unter der alten ID; `codewhale sessions` listet beide und `codewhale resume {previous}` öffnet die frühere wieder.",
   "ProviderExternalSemanticsRevoke": "{semantics} | Widerruf: {revoke}",
   "ProviderExternalRevoke": "Widerruf: {revoke}",
   "ProviderExternalChoiceTitle": " Externer Zugangsdaten-Zugriff · {provider} ",

@@ -1431,6 +1431,7 @@
   "ProviderExternalPinnedPathWarning": "Avertissement : le chemin d'identifiants ambiant de {owner} a changé ; le consentement reste épinglé à {path}.",
   "ToolProjectionWarning": "Avertissement : {provider} a omis les outils incompatibles pour cette requête : {tools}",
   "SnapshotsDisabledNotice": "Les instantanés et /undo sont désactivés pour {workspace} : {reason} Augmentez `{config_key}` dans config.toml (ou mettez 0 pour lever la limite) pour les activer.",
+  "SessionIdDivergedNotice": "L'identité de session a changé sous cette fenêtre : le moteur enregistre désormais les points de reprise sous {next} (c'était {previous}). Les points antérieurs restent sous l'ancien identifiant ; `codewhale sessions` liste les deux et `codewhale resume {previous}` rouvre l'ancien.",
   "ProviderExternalSemanticsRevoke": "{semantics} | révocation : {revoke}",
   "ProviderExternalRevoke": "révocation : {revoke}",
   "ProviderExternalChoiceTitle": " Accès à des identifiants externes · {provider} ",

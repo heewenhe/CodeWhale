@@ -2735,6 +2735,16 @@ pub(crate) async fn run_event_loop(
                                 next = %session_id,
                                 "engine session id diverged from the host session id"
                             );
+                            // The operator, not the log, owns this: earlier
+                            // checkpoints now live under the old id (#5931).
+                            let message = session_id_divergence_notice(app, previous, &session_id);
+                            app.push_status_toast(
+                                message.clone(),
+                                StatusToastLevel::Warning,
+                                Some(12_000),
+                            );
+                            app.add_message(HistoryCell::System { content: message });
+                            transcript_batch_updated = true;
                         }
                         app.current_session_id = Some(session_id.clone());
                         if app.last_known_goal_state.is_some()
@@ -6599,4 +6609,12 @@ mod fleet_workers_status_tests {
             "Current-session fleet workers: 3 total"
         );
     }
+}
+
+/// Text for a mid-session engine/host session id divergence: names both ids
+/// and the command that reopens the checkpoints written under the old one.
+pub(crate) fn session_id_divergence_notice(app: &App, previous: &str, next: &str) -> String {
+    app.tr(MessageId::SessionIdDivergedNotice)
+        .replace("{previous}", previous)
+        .replace("{next}", next)
 }
