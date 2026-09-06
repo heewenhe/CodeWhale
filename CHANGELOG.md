@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answerable work and no longer inflates the `blocked` chip; the receipts
   roster and the wire `state` gain `parked` (#5906, #5921).
 
+### Fixed
+
+- The posture bar states how long the session has been working and how long
+  the current turn has run, distinguishing actively working from waiting on a
+  tool, a sub-agent or the operator; the 0.9.12 shell had dropped the overall
+  working-time indicator from the place a glancing user checks (#5914).
+
 ### Added
 
 - The `/theme` picker now discovers valid user-authored `custom:<name>`
