@@ -2346,21 +2346,31 @@ pub struct ReasoningOnlyConfig {
     pub reprompt_message: Option<String>,
 }
 
-/// One configurable footer item.
+/// One configurable bottom-chrome item.
 ///
-/// Order in the user's `Vec<StatusItem>` is preserved: items in the left
-/// cluster (`Mode`, `Model`, `Cost`, `Status`) render in the order given;
-/// right-cluster chips (`Agents`, `ReasoningReplay`, `PrefixStability`,
-/// `Cache`, `ContextPercent`, `GitBranch`, `LastToolElapsed`, `RateLimit`)
-/// likewise honour ordering inside their cluster. The split between left and right is deliberate — left holds steady
-/// identity (mode/model/cost), right holds transient signals — so we route
-/// each variant to the correct side rather than letting users reorder across
-/// the spacer.
+/// Every variant owns exactly one thing on screen, and `/statusline` turns
+/// that thing on or off:
 ///
-/// Variants without a current data source (`RateLimit`, `LastToolElapsed`)
-/// are intentionally exposed today so the picker is forward-compatible; they
-/// render empty until the supporting fields land. Empty spans don't take
-/// up footer width, so the user sees no visual artifact.
+/// | Variant | What it paints |
+/// | --- | --- |
+/// | `Mode` | the posture bar's `plan`/`act`/`operate` chip |
+/// | `Model` | the metrics line's route segment |
+/// | `ContextPercent` | the metrics line's `ctx NN%` reading |
+/// | `Cost` | the metrics line's session price |
+/// | `SessionMetrics` | the metrics line's `ttft` and `tok/s` |
+/// | `Cache` | the metrics line's `cache NN%` |
+/// | `Tokens` | the metrics line's `↓ NNN` output tokens |
+/// | `Balance` | the metrics line's prepaid-credit reading (also gates the fetch) |
+///
+/// A variant that paints nothing does not belong here. Eight variants were
+/// retired in #5950 because the 0.9.12 shell gave their facts to a surface
+/// `/statusline` does not own — the posture bar's clock and live counts
+/// (`Status`, `Agents`), the launch header and git dock (`GitBranch`) — or
+/// because they were never wired at all (`ReasoningReplay`,
+/// `PrefixStability`, `LastToolElapsed`, `RateLimit`). Their keys still
+/// parse out of an old `config.toml`: [`StatusItem::from_key`] returns
+/// `None` and `deser_status_items` skips them with a warning, so an
+/// upgrader's file keeps loading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum StatusItem {
@@ -2370,30 +2380,16 @@ pub enum StatusItem {
     Model,
     /// Session cost in the configured display currency.
     Cost,
-    /// Activity label: "idle" / "busy" / "draft" / "working".
-    Status,
-    /// Sub-agent count chip ("3 agents").
-    Agents,
-    /// Reasoning-replay token count ("rsn 12.3k").
-    ReasoningReplay,
-    /// Prefix stability ("cache prefix 100%").
-    PrefixStability,
     /// Cache hit rate ("cache 73%").
     Cache,
-    /// Context-window utilisation percent ("48%").
+    /// Context-window utilisation percent ("ctx 48%").
     ContextPercent,
-    /// Current git branch name.
-    GitBranch,
-    /// Elapsed time of the most recent tool call (placeholder until wired).
-    LastToolElapsed,
-    /// Remaining rate-limit budget (placeholder until wired).
-    RateLimit,
-    /// Session token usage: input / cache-hit / output.
+    /// Output tokens of the live or last turn ("↓ 1.2K").
     Tokens,
     /// Prepaid remaining credit, refreshed once per turn completion.
     Balance,
-    /// Session metrics strip: turns · steps │ LLM · tools │ TTFT · tok/s │
-    /// cache │ in — sourced from engine timings and provider usage.
+    /// The metrics line's latency pair: `ttft NNNms` and `NN tok/s`, from
+    /// the same engine timings and provider usage `/status` prints in full.
     SessionMetrics,
 }
 
@@ -2407,12 +2403,9 @@ impl StatusItem {
         vec![
             StatusItem::Mode,
             StatusItem::Model,
+            StatusItem::ContextPercent,
             StatusItem::Cost,
-            StatusItem::Status,
-            StatusItem::Agents,
-            StatusItem::ReasoningReplay,
             StatusItem::Cache,
-            StatusItem::GitBranch,
             StatusItem::Tokens,
             StatusItem::SessionMetrics,
         ]
@@ -2425,15 +2418,8 @@ impl StatusItem {
             StatusItem::Mode => "mode",
             StatusItem::Model => "model",
             StatusItem::Cost => "cost",
-            StatusItem::Status => "status",
-            StatusItem::Agents => "agents",
-            StatusItem::ReasoningReplay => "reasoning_replay",
-            StatusItem::PrefixStability => "prefix_stability",
             StatusItem::Cache => "cache",
             StatusItem::ContextPercent => "context_percent",
-            StatusItem::GitBranch => "git_branch",
-            StatusItem::LastToolElapsed => "last_tool_elapsed",
-            StatusItem::RateLimit => "rate_limit",
             StatusItem::Tokens => "tokens",
             StatusItem::Balance => "balance",
             StatusItem::SessionMetrics => "session_metrics",
@@ -2449,16 +2435,13 @@ impl StatusItem {
             "mode" => Some(Self::Mode),
             "model" => Some(Self::Model),
             "cost" => Some(Self::Cost),
-            "status" => Some(Self::Status),
-            "agents" => Some(Self::Agents),
-            "reasoning_replay" => Some(Self::ReasoningReplay),
-            "prefix_stability" => Some(Self::PrefixStability),
             "cache" => Some(Self::Cache),
             "context_percent" => Some(Self::ContextPercent),
-            "git_branch" => Some(Self::GitBranch),
-            "last_tool_elapsed" => Some(Self::LastToolElapsed),
-            "rate_limit" => Some(Self::RateLimit),
             "tokens" => Some(Self::Tokens),
+            // Retired in #5950; skipped rather than rejected so an old
+            // `config.toml` still parses. See the type's doc comment.
+            "status" | "agents" | "reasoning_replay" | "prefix_stability" | "git_branch"
+            | "last_tool_elapsed" | "rate_limit" => None,
             "balance" => Some(Self::Balance),
             "session_metrics" => Some(Self::SessionMetrics),
             _ => None,
@@ -2472,16 +2455,9 @@ impl StatusItem {
             StatusItem::Mode => "Mode",
             StatusItem::Model => "Model",
             StatusItem::Cost => "Session cost",
-            StatusItem::Status => "Activity (idle/busy/draft/working)",
-            StatusItem::Agents => "Sub-agents in flight",
-            StatusItem::ReasoningReplay => "Reasoning replay tokens",
-            StatusItem::PrefixStability => "Prefix stability",
             StatusItem::Cache => "Prompt cache hit rate",
             StatusItem::ContextPercent => "Context window %",
-            StatusItem::GitBranch => "Git branch",
-            StatusItem::LastToolElapsed => "Last tool elapsed",
-            StatusItem::RateLimit => "Rate-limit remaining",
-            StatusItem::Tokens => "Session tokens",
+            StatusItem::Tokens => "Output tokens",
             StatusItem::Balance => "Account balance",
             StatusItem::SessionMetrics => "Session metrics",
         }
@@ -2495,18 +2471,11 @@ impl StatusItem {
             StatusItem::Mode => "plan · act · operate",
             StatusItem::Model => "the model id you'll send to",
             StatusItem::Cost => "running total for this session",
-            StatusItem::Status => "what the agent is doing right now",
-            StatusItem::Agents => "agents or RLM work in progress",
-            StatusItem::ReasoningReplay => "thinking tokens replayed each turn",
-            StatusItem::PrefixStability => "whether system/tools stayed cacheable",
             StatusItem::Cache => "% of prompt served from cache",
             StatusItem::ContextPercent => "tokens used / model context window",
-            StatusItem::GitBranch => "current workspace branch",
-            StatusItem::LastToolElapsed => "ms of the most recent tool call (reserved)",
-            StatusItem::RateLimit => "remaining requests in the budget (reserved)",
-            StatusItem::Tokens => "input / cache-hit / output token totals",
+            StatusItem::Tokens => "output tokens of the live or last turn",
             StatusItem::Balance => "remaining prepaid credit from the active provider",
-            StatusItem::SessionMetrics => "turns · steps · LLM/tool time · TTFT · tok/s · input",
+            StatusItem::SessionMetrics => "time to first token and output rate",
         }
     }
 
@@ -2516,17 +2485,10 @@ impl StatusItem {
         &[
             StatusItem::Mode,
             StatusItem::Model,
+            StatusItem::ContextPercent,
             StatusItem::Cost,
             StatusItem::Balance,
-            StatusItem::Status,
-            StatusItem::Agents,
-            StatusItem::ReasoningReplay,
-            StatusItem::PrefixStability,
             StatusItem::Cache,
-            StatusItem::ContextPercent,
-            StatusItem::GitBranch,
-            StatusItem::LastToolElapsed,
-            StatusItem::RateLimit,
             StatusItem::Tokens,
             StatusItem::SessionMetrics,
         ]

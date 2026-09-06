@@ -57,57 +57,70 @@ fn output_figures(app: &App) -> Option<(u64, Option<f64>)> {
 
 /// Build the metrics line's segments from live `App` state. Shedding is the
 /// widget's job; this only states the facts, in display order: model,
-/// context, cost, time to first token, output rate, output tokens.
+/// context, cost, balance, time to first token, output rate, output tokens.
 ///
 /// Repository and branch left this row (2026-09-02): the launch header and
 /// the git bottom view own them. Fleet, whale and automation counts left too —
 /// the posture bar's live counts own activity.
+///
+/// Composition is the user's (#5950): every segment here is gated on the
+/// matching [`StatusItem`] in `app.status_items`, which is what `/statusline`
+/// edits and `tui.status_items` persists. Between 0.9.12 and this change the
+/// row ignored that list entirely and the picker's toggles did nothing.
 pub(crate) fn info_segments(app: &App, width: u16) -> Vec<InfoSegment> {
+    use crate::config::StatusItem;
     use crate::localization::MessageId;
     use crate::palette::ChromeInk;
     let mut segments = Vec::new();
     let tier = crate::tui::underwater::ShellTier::for_chrome_width(width);
+    let shows = |item: StatusItem| app.status_items.contains(&item);
 
     // Route identity — the old identity band's fact, same shed discipline:
     // provider first, then effort, whole names or none. When no model is
     // configured the segment says so and waits.
-    let (_, model) = app.effective_route_identity_display();
-    if model.is_empty() {
-        segments.push(InfoSegment::new(
-            InfoSegmentId::Model,
-            app.tr(MessageId::StartupDefaultSubjectModel).as_ref(),
-            app.tr(MessageId::InfoLineNotConnected).as_ref(),
-            ChromeInk::Waiting,
-        ));
-    } else {
-        // The context reading and the metrics claim the rest of the row;
-        // the route sheds its own qualifiers first.
-        let budget = crate::tui::phase_strip::info_route_budget(width);
-        let fields = crate::tui::phase_strip::route_identity_fields(app, tier, budget)
-            .unwrap_or_else(|| {
-                vec![crate::tui::phase_strip::RouteIdentityField {
-                    kind: crate::tui::phase_strip::RouteFieldKind::Model,
-                    text: model,
-                }]
-            });
-        segments.push(InfoSegment::new(
-            InfoSegmentId::Model,
-            "",
-            fields
-                .iter()
-                .map(|field| field.text.as_str())
-                .collect::<Vec<_>>()
-                .join(ROUTE_FIELD_JOIN),
-            ChromeInk::Identity,
-        ));
+    // Off the row when the user says so: `/model`, the picker and the launch
+    // header all still name the route.
+    if shows(StatusItem::Model) {
+        let (_, model) = app.effective_route_identity_display();
+        if model.is_empty() {
+            segments.push(InfoSegment::new(
+                InfoSegmentId::Model,
+                app.tr(MessageId::StartupDefaultSubjectModel).as_ref(),
+                app.tr(MessageId::InfoLineNotConnected).as_ref(),
+                ChromeInk::Waiting,
+            ));
+        } else {
+            // The context reading and the metrics claim the rest of the row;
+            // the route sheds its own qualifiers first.
+            let budget = crate::tui::phase_strip::info_route_budget(width);
+            let fields = crate::tui::phase_strip::route_identity_fields(app, tier, budget)
+                .unwrap_or_else(|| {
+                    vec![crate::tui::phase_strip::RouteIdentityField {
+                        kind: crate::tui::phase_strip::RouteFieldKind::Model,
+                        text: model,
+                    }]
+                });
+            segments.push(InfoSegment::new(
+                InfoSegmentId::Model,
+                "",
+                fields
+                    .iter()
+                    .map(|field| field.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(ROUTE_FIELD_JOIN),
+                ChromeInk::Identity,
+            ));
+        }
     }
 
-    // The context reading: painted here and nowhere else. Only displayed
-    // when context fullness >= 50%; below 50% it remains silent. At the 80%
-    // cap the whole reading turns to the error token — it is the one fact on
-    // this row that becomes a problem rather than a status.
+    // The context reading: painted here and nowhere else, at every
+    // fullness. The 0.9.12 row went silent below 50% and left most of a
+    // session with no context signal at all (#5950); watching the number
+    // climb from 4% is the whole point of the reading. At the 80% cap the
+    // whole reading turns to the error token — it is the one fact on this
+    // row that becomes a problem rather than a status.
     let pct = info_context_percent(app);
-    if pct >= 50 {
+    if shows(StatusItem::ContextPercent) {
         segments.push(InfoSegment::new(
             InfoSegmentId::Context,
             app.tr(MessageId::InfoLineContext).as_ref(),
@@ -121,7 +134,7 @@ pub(crate) fn info_segments(app: &App, width: u16) -> Vec<InfoSegment> {
     }
 
     let cost = session_cost_label(app);
-    if !cost.is_empty() {
+    if shows(StatusItem::Cost) && !cost.is_empty() {
         segments.push(InfoSegment::new(
             InfoSegmentId::Cost,
             "",
@@ -130,10 +143,30 @@ pub(crate) fn info_segments(app: &App, width: u16) -> Vec<InfoSegment> {
         ));
     }
 
+    // The prepaid-credit reading: opt-in, and the same status item that
+    // authorises the background fetch (`should_fetch_provider_balance`), so
+    // the row can only show a number this session actually asked for.
+    if shows(StatusItem::Balance)
+        && let Some(balance) = app.balance_cell.lock().ok().and_then(|guard| {
+            guard
+                .as_ref()
+                .and_then(crate::pricing::BalanceInfo::chip_label)
+        })
+    {
+        segments.push(InfoSegment::new(
+            InfoSegmentId::Balance,
+            app.tr(MessageId::FooterBalancePrefix).as_ref(),
+            balance,
+            ChromeInk::MetadataValue,
+        ));
+    }
+
     // The DeepSeek-harness session metrics, from the same accumulators
     // `/cost` prints: nothing here is estimated except the live stream's
     // running token count, which the provider's receipt replaces.
-    if let Some(ttft) = app.session_metrics.ttft_average() {
+    if shows(StatusItem::SessionMetrics)
+        && let Some(ttft) = app.session_metrics.ttft_average()
+    {
         segments.push(InfoSegment::new(
             InfoSegmentId::Ttft,
             app.tr(MessageId::InfoLineTtft).as_ref(),
@@ -142,7 +175,7 @@ pub(crate) fn info_segments(app: &App, width: u16) -> Vec<InfoSegment> {
         ));
     }
     if let Some((tokens, rate)) = output_figures(app) {
-        if let Some(rate) = rate {
+        if let Some(rate) = rate.filter(|_| shows(StatusItem::SessionMetrics)) {
             segments.push(InfoSegment::new(
                 InfoSegmentId::Rate,
                 "",
@@ -157,7 +190,7 @@ pub(crate) fn info_segments(app: &App, width: u16) -> Vec<InfoSegment> {
         let hit = u64::from(app.session.displayed_total_cache_hit_tokens());
         let miss = u64::from(app.session.displayed_total_cache_miss_tokens());
         let cache_total = hit + miss;
-        if cache_total > 0 {
+        if shows(StatusItem::Cache) && cache_total > 0 {
             let cache_pct = (hit * 100 + cache_total / 2)
                 .checked_div(cache_total)
                 .and_then(|pct| u8::try_from(pct).ok())
@@ -169,17 +202,19 @@ pub(crate) fn info_segments(app: &App, width: u16) -> Vec<InfoSegment> {
                 ChromeInk::MetadataValue,
             ));
         }
-        segments.push(InfoSegment::new(
-            InfoSegmentId::OutputTokens,
-            "↓",
-            crate::tui::session_metrics::format_tokens(tokens),
-            ChromeInk::MetadataValue,
-        ));
+        if shows(StatusItem::Tokens) {
+            segments.push(InfoSegment::new(
+                InfoSegmentId::OutputTokens,
+                "↓",
+                crate::tui::session_metrics::format_tokens(tokens),
+                ChromeInk::MetadataValue,
+            ));
+        }
     } else {
         let hit = u64::from(app.session.displayed_total_cache_hit_tokens());
         let miss = u64::from(app.session.displayed_total_cache_miss_tokens());
         let cache_total = hit + miss;
-        if cache_total > 0 {
+        if shows(StatusItem::Cache) && cache_total > 0 {
             let cache_pct = (hit * 100 + cache_total / 2)
                 .checked_div(cache_total)
                 .and_then(|pct| u8::try_from(pct).ok())
@@ -2188,6 +2223,199 @@ mod tests {
     #[test]
     fn leaves_short_titles_untouched() {
         assert_eq!(short_title_truncate("short", 10), "short");
+    }
+
+    // ── #5950: the bottom chrome is the user's to compose ─────────────
+
+    use crate::config::StatusItem;
+    use crate::tui::app::App;
+    use crate::tui::infoline::{InfoLine, InfoSegmentId};
+
+    /// A session whose context is `pct` full, by pinning the route's window
+    /// to a multiple of what this conversation actually estimates. Nothing
+    /// here fakes the reading itself — it goes through
+    /// `context_usage_snapshot` like the live shell does.
+    fn app_with_context_percent(pct: u8) -> App {
+        use crate::models::{ContentBlock, Message};
+        let mut app =
+            crate::test_support::test_app_with_options(crate::test_support::test_tui_options("."));
+        app.api_messages = vec![Message {
+            role: crate::models::Role::User,
+            content: vec![ContentBlock::Text {
+                text: "context ".repeat(400),
+                cache_control: None,
+            }],
+        }];
+        let (used, _, _) =
+            super::context_usage_snapshot(&app).expect("a conversation has a context reading");
+        let window = (used as f64 * 100.0 / f64::from(pct)).round().max(1.0);
+        app.active_route_limits = Some(codewhale_config::route::RouteLimits {
+            context_tokens: Some(window as u64),
+            ..Default::default()
+        });
+        assert_eq!(
+            super::info_context_percent(&app),
+            pct,
+            "fixture should land exactly on {pct}%"
+        );
+        app
+    }
+
+    /// The metrics line as the user reads it, at `width`.
+    fn metrics_row(app: &App, width: u16) -> String {
+        let segments = super::info_segments(app, width);
+        let hint = crate::tui::shell_key_routing::info_help_hint(app.ui_locale);
+        let backend = TestBackend::new(width, 1);
+        let mut terminal = Terminal::new(backend).expect("metrics-line terminal");
+        terminal
+            .draw(|frame| {
+                use ratatui::widgets::Widget as _;
+                let area = frame.area();
+                InfoLine::new(&app.ui_theme, &hint, &segments).render(area, frame.buffer_mut());
+            })
+            .expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect::<String>()
+    }
+
+    /// The reading used to go silent below 50% fullness, which is most of a
+    /// session (#5950). It is a reading, not an alarm: it states 10% as
+    /// readily as 60%, and only the ink changes at the thresholds.
+    #[test]
+    fn context_reading_paints_at_every_fullness() {
+        for pct in [10u8, 60] {
+            let app = app_with_context_percent(pct);
+            let segment = super::info_segments(&app, 160)
+                .into_iter()
+                .find(|segment| segment.id == InfoSegmentId::Context)
+                .unwrap_or_else(|| panic!("{pct}%: the context reading must be on the row"));
+            assert_eq!(segment.value, format!("{pct}%"));
+            assert_eq!(
+                segment.ink,
+                crate::palette::ChromeInk::Info,
+                "{pct}%: below the cap the reading is a status, not a failure"
+            );
+            // Narrow rows keep it too: the reading is the row's floor and
+            // sheds after everything else, including the help hint.
+            for width in [40u16, 80, 160] {
+                let row = metrics_row(&app, width);
+                assert!(
+                    row.contains(&format!("ctx {pct}%")),
+                    "{pct}% at {width} columns: {row:?}"
+                );
+            }
+        }
+    }
+
+    /// The warning ink still belongs to the thresholds it always used: the
+    /// error token from 80% up, and not one percent earlier.
+    #[test]
+    fn context_reading_keeps_its_warning_threshold() {
+        for (pct, expected) in [
+            (10u8, crate::palette::ChromeInk::Info),
+            (79, crate::palette::ChromeInk::Info),
+            (80, crate::palette::ChromeInk::Failure),
+        ] {
+            let app = app_with_context_percent(pct);
+            let segment = super::info_segments(&app, 160)
+                .into_iter()
+                .find(|segment| segment.id == InfoSegmentId::Context)
+                .expect("context reading");
+            assert_eq!(segment.ink, expected, "{pct}%");
+        }
+    }
+
+    /// `/statusline` drives this row. Between 0.9.12 and #5950 the picker
+    /// persisted a list nothing read, so every toggle in it was a lie.
+    #[test]
+    fn statusline_toggle_removes_its_segment_on_the_next_frame() {
+        use crate::tui::views::{ModalView, ViewAction, ViewEvent};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = app_with_context_percent(10);
+        assert!(
+            metrics_row(&app, 160).contains("ctx 10%"),
+            "the reading starts on the row"
+        );
+
+        let mut picker = crate::tui::views::status_picker::StatusPickerView::new(
+            &app.status_items,
+            app.api_provider,
+            app.ui_locale,
+        );
+        // Walk to the context row the way a user does, then uncheck it.
+        let context_row = StatusItem::all()
+            .iter()
+            .filter(|item| item.is_available_for(app.api_provider))
+            .position(|item| *item == StatusItem::ContextPercent)
+            .expect("the picker offers the context reading");
+        for _ in 0..context_row {
+            picker.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        let action = picker.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        let ViewAction::Emit(ViewEvent::StatusItemsUpdated { items, .. }) = action else {
+            panic!("space should emit a live preview: {action:?}");
+        };
+        assert!(!items.contains(&StatusItem::ContextPercent));
+
+        // What the handler does with the event, and then the next frame.
+        app.status_items = items;
+        let row = metrics_row(&app, 160);
+        assert!(
+            !row.contains("ctx "),
+            "the toggle must take it off: {row:?}"
+        );
+        assert!(
+            row.contains("deepseek"),
+            "and must take nothing else with it: {row:?}"
+        );
+    }
+
+    /// Every remaining status item owns a segment, and an empty list leaves
+    /// the row with nothing but the help hint — no toggle in `/statusline`
+    /// paints something no toggle can remove.
+    #[test]
+    fn every_metrics_segment_answers_to_a_status_item() {
+        let mut app = app_with_context_percent(60);
+        app.session.last_prompt_tokens = Some(1_000);
+        app.session_metrics
+            .record_model_call(1_200, 30_000, Some(400), Some(30_400));
+        app.streaming_output_token_estimate = 1_200;
+        app.is_loading = true;
+        app.turn_started_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(30));
+        *app.balance_cell.lock().expect("balance cell") = Some(crate::pricing::BalanceInfo {
+            currency: "USD".to_string(),
+            total_balance: "4.32".to_string(),
+            topped_up_balance: String::new(),
+            granted_balance: String::new(),
+        });
+        app.status_items = StatusItem::all().to_vec();
+
+        let ids: Vec<InfoSegmentId> = super::info_segments(&app, 200)
+            .iter()
+            .map(|segment| segment.id)
+            .collect();
+        for expected in [
+            InfoSegmentId::Model,
+            InfoSegmentId::Context,
+            InfoSegmentId::Balance,
+            InfoSegmentId::Ttft,
+            InfoSegmentId::Rate,
+            InfoSegmentId::OutputTokens,
+        ] {
+            assert!(ids.contains(&expected), "{expected:?} missing from {ids:?}");
+        }
+
+        app.status_items = Vec::new();
+        assert!(
+            super::info_segments(&app, 200).is_empty(),
+            "an empty status list leaves the metrics line empty"
+        );
     }
 }
 

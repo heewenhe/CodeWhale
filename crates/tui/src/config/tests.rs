@@ -11519,7 +11519,7 @@ fn status_items_scenario() {
         // future "cost_saving" chip).
         let toml_str = r#"
             alternate_screen = "auto"
-            status_items = ["mode", "model", "unknown_future_item", "cost", "another_unknown", "status"]
+            status_items = ["mode", "model", "unknown_future_item", "cost", "another_unknown", "cache"]
         "#;
         let tui: TuiConfig = toml::from_str(toml_str).expect("should parse without error");
         let items = tui.status_items.expect("status_items should be Some");
@@ -11527,7 +11527,21 @@ fn status_items_scenario() {
         assert_eq!(items[0], StatusItem::Mode);
         assert_eq!(items[1], StatusItem::Model);
         assert_eq!(items[2], StatusItem::Cost);
-        assert_eq!(items[3], StatusItem::Status);
+        assert_eq!(items[3], StatusItem::Cache);
+    }
+    // A config written before #5950 retired the inert items keeps loading:
+    // the retired keys are skipped, the live ones survive in order.
+    {
+        let toml_str = r#"
+            status_items = ["mode", "status", "model", "git_branch", "rate_limit", "tokens"]
+        "#;
+        let tui: TuiConfig = toml::from_str(toml_str).expect("legacy items should parse");
+        let items = tui.status_items.expect("status_items should be Some");
+        assert_eq!(
+            items,
+            vec![StatusItem::Mode, StatusItem::Model, StatusItem::Tokens],
+            "retired keys should drop out without failing the whole file"
+        );
     }
     // from status_items_deser_allows_missing_field
     {

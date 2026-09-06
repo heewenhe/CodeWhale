@@ -1087,14 +1087,18 @@ turn_wall_clock_secs = 3600  # cumulative wall clock for one turn, excluding tim
 stream_max_content_mb = 10   # per-step cap on streamed content (0 = default, 1-512)
 stream_max_duration_secs = 1800 # per-step cap on one stream's duration (0 = default, 10-86400)
 osc8_links = true            # emit OSC 8 escapes around URLs (Cmd+click in iTerm2/Ghostty/Kitty/WezTerm/Terminal.app 13+); set false for terminals that misrender
-# Ordered footer chips shown in the TUI status line. Omit the key to use the
-# built-in default; set [] to hide all configurable chips. You can also edit
-# this interactively with `/statusline`.
-# Supported keys: mode, model, cost, balance (DeepSeek / DeepSeekCN only),
-# status, agents,
-# reasoning_replay, prefix_stability, cache, context_percent, git_branch,
-# last_tool_elapsed (reserved), rate_limit (reserved), tokens.
-# status_items = ["mode", "model", "status", "git_branch", "tokens", "cache"]
+# What the bottom chrome shows. Each key is one thing on screen: `mode` is the
+# posture bar's plan/act/operate chip, everything else is a segment of the
+# metrics line under it. Omit the key to use the built-in default; set [] to
+# strip the metrics line down to the help hint. You can also edit this
+# interactively with `/statusline`.
+# Supported keys: mode, model, context_percent, cost,
+# balance (prepaid providers only: DeepSeek, DeepSeekCN, OpenRouter,
+# SiliconFlow), cache, tokens, session_metrics.
+# Retired in 0.9.13: status, agents, reasoning_replay, prefix_stability,
+# git_branch, last_tool_elapsed, rate_limit — they drove nothing. Old files
+# keep loading; the retired keys are ignored.
+# status_items = ["mode", "model", "context_percent", "cost", "tokens"]
 # notification_condition = "unfocused" # unfocused | always | never
 #                                    "unfocused" = notify only after this terminal has been
 #                                    in the background for two seconds (default);

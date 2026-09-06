@@ -1,13 +1,16 @@
 //! `/statusline` multi-select picker.
 //!
 //! Mirrors codex-rs's `bottom_pane::status_line_setup` ergonomically: a
-//! checklist of footer items the user can toggle on/off with Space (or
-//! Enter), reordered by ↑/↓, applied immediately so the live footer
+//! checklist of bottom-chrome items the user can toggle on/off with Space (or
+//! Enter), moved through with ↑/↓, applied immediately so the live chrome
 //! reflects every change. Enter saves to `~/.deepseek/config.toml` under
 //! `tui.status_items`; Esc reverts to the snapshot taken on open.
 //!
-//! The picker enumerates [`StatusItem::all`] so adding a new variant in
-//! `crates/tui/src/config.rs` automatically surfaces a new row here.
+//! Every row here changes what is on screen (#5950): the metrics line's
+//! segments ([`crate::tui::ui::frame::info_segments`]) and the posture bar's
+//! mode chip. Between 0.9.12 and that fix the list was persisted and never
+//! read, so the checklist was decoration — a new variant belongs in
+//! `crates/tui/src/config.rs` only once something paints it.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -392,17 +395,18 @@ mod tests {
 
     #[test]
     fn selected_row_text_fills_available_width() {
-        let text = status_row_text("▸", "[ ]", &StatusItem::LastToolElapsed, 40);
+        let text = status_row_text("▸", "[ ]", &StatusItem::Cache, 40);
         assert_eq!(text.width(), 40);
-        assert!(text.starts_with(" ▸ [ ] Last tool elapsed"));
+        assert!(text.starts_with(" ▸ [ ] Prompt cache hit rate"));
     }
 
     #[test]
     fn selected_row_text_semantically_truncates_hint_at_narrow_width() {
-        let text = status_row_text("▸", "[ ]", &StatusItem::LastToolElapsed, 49);
-        assert_eq!(text.width(), 49);
-        assert!(text.contains("ms of the most…"), "{text:?}");
-        assert!(!text.contains("ms of the most r"), "{text:?}");
+        let text = status_row_text("▸", "[ ]", &StatusItem::Cache, 44);
+        assert_eq!(text.width(), 44);
+        // Cut at a word boundary, never mid-word.
+        assert!(text.contains("% of…"), "{text:?}");
+        assert!(!text.contains("% of p"), "{text:?}");
     }
 
     #[test]

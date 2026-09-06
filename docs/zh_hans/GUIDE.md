@@ -169,13 +169,14 @@ JSON 把凭据的 `source`（来源）与字面的 `availability`（可用性）
 - 工作栏（Work bar）：转录区上方的一条（或可选的侧栏），承载活动目标、待办列表和子智能体。行会保持整个会话——已完成的工作显示为"已完成"而不是消失——点击某一行（或对它按 `Enter`）会打开它的详情。
 - 状态与底部区域：实时活动、排队的后续动作和简短命令提示。
 
-底部状态行可配置。运行 `/statusline` 选择哪些底部的片区可见，或在 `config.toml` 里设置 `[tui].status_items` 同时控制选择和顺序。
-当前支持的键包括 `mode`、`model`、`cost`、`balance`（仅 DeepSeek / DeepSeekCN）、`status`、`agents`、`reasoning_replay`、`prefix_stability`、`cache`、`context_percent`、`git_branch`、`last_tool_elapsed`（保留）、`rate_limit`（保留）、`tokens` 和 `session_metrics`。
-省略 `status_items` 以保持内置默认顺序；把它设为 `[]` 以隐藏可配置的片区。
+底部区域可配置。运行 `/statusline` 选择哪些内容可见，或在 `config.toml` 里设置 `[tui].status_items`。每个键只对应屏幕上的一样东西：`mode` 是姿态栏的 plan/act/operate 片区，而 `model`、`context_percent`、`cost`、`balance`（仅限预付费提供商：DeepSeek、DeepSeekCN、OpenRouter、SiliconFlow）、`cache`、`tokens` 和 `session_metrics` 是它下方指标行的片区。
+省略 `status_items` 以保持内置默认；把它设为 `[]` 只保留帮助提示。
 
-`session_metrics`（默认开启）在阶段行上绘制会话指标条带：
-`4 turns · 108 steps │ LLM 11m46s · Tool call 1m52s │ TTFT avg 1.5s · 120 tok/s │ Cache hit 99% │ Input 9.3M`
-Turns 是用户回合；steps 是模型调用加工具调用；`LLM` 是模型调用墙钟时间的总和，`Tool call` 是工具墙钟时间的总和；`TTFT avg` 是到首个流式 token 的平均时间；`tok/s` 是提供商报告的输出 token 除以流式秒数；`Cache hit` 和 `Input` 是提供商报告的 token 类别。提供商或运行时证据尚未到达的单元格会被省略而不是估算，在窄行上，指标条会丢弃价值最低的组（先是 steps 和工具时间，然后是延迟、turns、LLM 时间），而不是截断某个数字。`/status` 打印未裁剪的完整行。
+`context_percent` 默认开启，并在任何占用率下都显示 `ctx NN%`——0.9.12 在 50% 以下保持沉默，使会话的大部分时间都没有上下文信号。该读数从 80% 起仍使用警示配色。
+
+`status`、`agents`、`reasoning_replay`、`prefix_stability`、`git_branch`、`last_tool_elapsed` 和 `rate_limit` 这些键在 0.9.13 中已退役：它们不驱动任何东西。旧的配置文件仍可加载——已退役的键会被忽略并在日志中给出警告。
+
+`session_metrics`（默认开启）在指标行上绘制这一对延迟读数：`ttft 1.5s`（到首个流式 token 的平均时间）和 `120 tok/s`（提供商报告的输出 token 除以流式秒数）。两者来自 `/status` 完整打印的同一批累加器（turns、steps、LLM 与工具墙钟时间、缓存命中、输入）；提供商或运行时证据尚未到达的数字会被省略而不是估算。在窄行上，这一对会先于成本和上下文读数被舍弃，而不是截断某个数字。
 
 转录区（对话记录）就是审计轨迹。当 Codewhale 读文件、跑命令或改代码时，动作会出现在那里。如果某条命令失败，把可见的失败输出作为你下一条指令的一部分，而不是从头再来。
 

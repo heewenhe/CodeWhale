@@ -21747,10 +21747,6 @@ fn default_footer_excludes_provider_specific_diagnostic_chips() {
     let items = crate::config::StatusItem::default_footer();
 
     assert!(
-        !items.contains(&crate::config::StatusItem::PrefixStability),
-        "prefix stability is a diagnostic chip and should not crowd the default footer"
-    );
-    assert!(
         !items.contains(&crate::config::StatusItem::Balance),
         "balance is an opt-in prepaid chip and should not crowd the default footer"
     );
@@ -21759,8 +21755,8 @@ fn default_footer_excludes_provider_specific_diagnostic_chips() {
         "default footer should still include provider-reported cache hit rate"
     );
     assert!(
-        items.contains(&crate::config::StatusItem::GitBranch),
-        "default footer should surface the current workspace branch"
+        items.contains(&crate::config::StatusItem::ContextPercent),
+        "the context reading is on by default: it is the row's always-on signal (#5950)"
     );
 }
 

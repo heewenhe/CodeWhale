@@ -2021,10 +2021,15 @@ pub struct App {
     /// `/config mini_window.keep_*`. The renderer reads this instead of the
     /// parsed Config so runtime changes apply without a restart.
     pub(crate) mini_window: crate::config::MiniWindowConfig,
-    /// Ordered list of footer items the user wants visible. Sourced from
-    /// `tui.status_items` in `~/.deepseek/config.toml` at startup; mutated
-    /// live by `/statusline`. The renderer iterates this slice; no item is
-    /// hardcoded in the footer code path.
+    /// What the bottom chrome shows. Sourced from `tui.status_items` in
+    /// `~/.deepseek/config.toml` at startup; mutated live by `/statusline`.
+    ///
+    /// Read by [`crate::tui::ui::frame::info_segments`] for every segment of
+    /// the metrics line, by `tideline_footer_from_app` for the posture bar's
+    /// mode chip, and by `should_fetch_provider_balance` for the balance
+    /// fetch. Every variant in the list paints exactly one of those; the
+    /// items that painted nothing were retired in #5950 rather than left as
+    /// toggles that lie.
     pub status_items: Vec<crate::config::StatusItem>,
     /// Optional header items enabled from `tui.header_items` in `config.toml`
     /// at startup. Built-in header content remains independent of this list.
