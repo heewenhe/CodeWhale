@@ -8201,18 +8201,30 @@ fn runtime_mcp_refresh_replaces_the_pool_slice() {
         .into_iter()
         .map(str::to_string)
         .collect();
+    let always_load: HashSet<String> = [
+        "mcp_static_read",
+        "mcp_dynamic_render",
+        "mcp_alpha_authenticate",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
     replace_runtime_mcp_tools(
         &mut catalog,
         &mut active,
         &universe,
         vec![api_tool("mcp_static_read"), api_tool("mcp_dynamic_render")],
+        AppMode::Agent,
+        &always_load,
+        crate::model_profile::ToolSurfaceBudget::Standard,
     );
 
     let names: Vec<&str> = catalog.iter().map(|tool| tool.name.as_str()).collect();
     assert_eq!(
         names,
-        vec!["exec_shell", "mcp_static_read", "mcp_dynamic_render"],
-        "the synthetic authenticate tool leaves after its own login; engine tools stay"
+        vec!["exec_shell", "mcp_dynamic_render", "mcp_static_read"],
+        "the synthetic authenticate tool leaves after its own login; engine tools stay; \
+         the refreshed slice is name-sorted like the initial catalog (#5939)"
     );
     assert!(active.contains("mcp_static_read"));
     assert!(active.contains("mcp_dynamic_render"));
@@ -8233,6 +8245,9 @@ fn runtime_mcp_refresh_replaces_the_pool_slice() {
         &mut active,
         &universe,
         vec![api_tool("mcp_alpha_authenticate")],
+        AppMode::Agent,
+        &always_load,
+        crate::model_profile::ToolSurfaceBudget::Standard,
     );
     let names: Vec<&str> = catalog.iter().map(|tool| tool.name.as_str()).collect();
     assert_eq!(
@@ -8242,6 +8257,69 @@ fn runtime_mcp_refresh_replaces_the_pool_slice() {
     );
     assert!(active.contains("mcp_alpha_authenticate"));
     assert!(!active.contains("mcp_dynamic_render"));
+}
+
+#[test]
+fn runtime_mcp_refresh_keeps_the_pool_deferred_and_the_active_set_narrow() {
+    // #5939: a mid-turn MCP refresh must not flip the whole pool into the
+    // request. Seed a catalog with N deferred MCP tools (one activated by a
+    // ToolSearch earlier in the turn) plus one default-active native tool.
+    let native = api_tool("exec_shell");
+    let mut catalog = vec![native];
+    let mut universe: HashSet<String> = HashSet::new();
+    for index in 0..6 {
+        let name = format!("mcp_server_tool_{index}");
+        let mut tool = api_tool(&name);
+        tool.defer_loading = Some(true);
+        universe.insert(name);
+        catalog.push(tool);
+    }
+    let mut active: HashSet<String> = ["exec_shell", "mcp_server_tool_2"]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let requested_before = active_tools_for_step(&catalog, &active).len();
+    assert_eq!(requested_before, 2);
+
+    // The pool's raw projection: seven tools (one new), every one of them
+    // `defer_loading = false`.
+    let refreshed: Vec<Tool> = (0..7)
+        .map(|index| api_tool(&format!("mcp_server_tool_{index}")))
+        .collect();
+    universe.insert("mcp_server_tool_6".to_string());
+    let always_load: HashSet<String> = HashSet::new();
+    replace_runtime_mcp_tools(
+        &mut catalog,
+        &mut active,
+        &universe,
+        refreshed,
+        AppMode::Agent,
+        &always_load,
+        crate::model_profile::ToolSurfaceBudget::Standard,
+    );
+
+    let requested_after = active_tools_for_step(&catalog, &active);
+    let names: Vec<&str> = requested_after
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["exec_shell", "mcp_server_tool_2"],
+        "only the previously activated MCP tool and the native head stay in the request"
+    );
+    assert!(
+        catalog
+            .iter()
+            .filter(|tool| tool.name.starts_with("mcp_server_tool_"))
+            .all(|tool| tool.defer_loading == Some(true)),
+        "the refreshed pool is deferred like the initial catalog"
+    );
+    assert_eq!(
+        catalog.len(),
+        8,
+        "the new tool joined the catalog, deferred"
+    );
 }
 
 #[test]

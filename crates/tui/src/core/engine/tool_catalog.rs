@@ -230,7 +230,7 @@ pub(super) fn apply_registry_first_shell_guidance(catalog: &mut [Tool]) {
     shell.description.push_str(REGISTRY_FIRST_SHELL_GUIDANCE);
 }
 
-fn apply_tool_surface_budget(
+pub(super) fn apply_tool_surface_budget(
     catalog: &mut [Tool],
     surface_budget: ToolSurfaceBudget,
     always_load: &HashSet<String>,

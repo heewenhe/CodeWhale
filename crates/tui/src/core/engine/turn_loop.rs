@@ -326,22 +326,42 @@ fn registered_tool_requires_non_bypassable_approval(tool_name: &str) -> bool {
 /// killed by a live 401 would stay callable in name. `universe` is every
 /// name the pool can own; entries inside it are the pool's to manage, and
 /// the refreshed list is the new truth.
+///
+/// The refreshed slice is shaped exactly like the turn's initial catalog —
+/// the same deferral pass, the same surface budget, the same always-load
+/// set — and only the names that were active before the replacement (or
+/// that shaping leaves non-deferred) come back active. The pool's raw
+/// projection carries `defer_loading = false` on every tool, so pushing it
+/// in unshaped put every MCP tool definition into every remaining request
+/// of the turn (#5939).
 pub(super) fn replace_runtime_mcp_tools(
     tool_catalog: &mut Vec<Tool>,
     active_tool_names: &mut std::collections::HashSet<String>,
     universe: &std::collections::HashSet<String>,
-    refreshed: Vec<Tool>,
+    mut refreshed: Vec<Tool>,
+    mode: AppMode,
+    always_load: &std::collections::HashSet<String>,
+    surface_budget: crate::model_profile::ToolSurfaceBudget,
 ) -> usize {
     let before = tool_catalog.len();
+    let mut previously_active = std::collections::HashSet::new();
     tool_catalog.retain(|tool| {
         let owned = universe.contains(&tool.name);
-        if owned {
-            active_tool_names.remove(&tool.name);
+        if owned && active_tool_names.remove(&tool.name) {
+            previously_active.insert(tool.name.clone());
         }
         !owned
     });
+    super::tool_catalog::apply_mcp_tool_deferral(&mut refreshed, mode, always_load);
+    super::tool_catalog::apply_tool_surface_budget(&mut refreshed, surface_budget, always_load);
+    refreshed.sort_by(|a, b| a.name.cmp(&b.name));
     for tool in refreshed {
-        active_tool_names.insert(tool.name.clone());
+        let stays_active = previously_active.contains(&tool.name)
+            || always_load.contains(&tool.name)
+            || !tool.defer_loading.unwrap_or(false);
+        if stays_active {
+            active_tool_names.insert(tool.name.clone());
+        }
         tool_catalog.push(tool);
     }
     tool_catalog.len().abs_diff(before)
@@ -4046,11 +4066,17 @@ impl Engine {
                             let pool = pool.lock().await;
                             (pool.model_tool_names(), pool.to_api_tools())
                         };
+                        let surface_budget = self
+                            .turn_tool_surface_budget
+                            .unwrap_or(crate::model_profile::ToolSurfaceBudget::Standard);
                         tool_surface_changed |= replace_runtime_mcp_tools(
                             tool_catalog,
                             active_tool_names,
                             &universe,
                             refreshed,
+                            self.current_mode,
+                            &self.config.tools_always_load,
+                            surface_budget,
                         ) > 0;
                     }
                     // Any of the legitimate mid-turn tool-surface changes above
