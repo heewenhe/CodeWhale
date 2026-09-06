@@ -1873,6 +1873,12 @@ impl ModalView for FleetSetupView {
                     Some(model) => format!("This member will run on {model}."),
                     None => "This member uses your current model.".to_string(),
                 });
+                if filtered_choices.is_empty() {
+                    context.push(
+                        "No routes match this filter. Keep typing, or press Esc to clear it."
+                            .to_string(),
+                    );
+                }
                 render_choice_step(chunks[1], buf, &filtered_choices, selected, &context);
                 register_choice_hitboxes(
                     chunks[1],
@@ -2366,6 +2372,25 @@ fn render_choice_step(
             .split(area);
         (rows[0], rows[1])
     };
+
+    // No choices (a type-to-filter query that matches nothing): there is no
+    // row to point at and no detail to show, so paint the context — the
+    // caller adds the "no matches" hint — and stop before indexing (#5953).
+    if choices.is_empty() {
+        let lines: Vec<Line> = context
+            .iter()
+            .map(|entry| {
+                Line::from(Span::styled(
+                    entry.clone(),
+                    Style::default().fg(palette::TEXT_MUTED),
+                ))
+            })
+            .collect();
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: true })
+            .render(detail_area, buf);
+        return;
+    }
 
     // List: labels are identifiers, so a `▸`-marked single line each is safe.
     let list_width = usize::from(list_area.width);
@@ -3329,6 +3354,49 @@ mod tests {
         assert_eq!(draft.provider.as_deref(), Some("zai"));
         assert_eq!(draft.model.as_deref(), Some("glm-5.2"));
         assert_eq!(draft.reasoning_effort.as_deref(), Some("max"));
+    }
+
+    #[test]
+    fn model_step_filter_with_no_matches_renders_a_hint_instead_of_panicking() {
+        // #5953: a type-to-filter query that matches nothing left
+        // `render_choice_step` indexing an empty slice.
+        let snap = snapshot();
+        let mut view = FleetSetupView::from_snapshot(snap);
+        view.handle_key(key(KeyCode::Enter));
+        view.handle_key(key(KeyCode::Char('/')));
+        for ch in "minimax ".chars() {
+            view.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert!(view.model_filter_active);
+        assert_eq!(
+            view.step_len(),
+            0,
+            "the query must match nothing for this test"
+        );
+        // Every size must render without panicking; the sizes with a detail
+        // pane must also explain the empty list.
+        for (w, h, expect_hint) in [(120u16, 40u16, true), (80, 24, true), (60, 12, false)] {
+            let area = Rect::new(0, 0, w, h);
+            let mut buf = Buffer::empty(area);
+            view.render(area, &mut buf);
+            let text: String = (0..h)
+                .map(|y| {
+                    (0..w)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if expect_hint {
+                assert!(
+                    text.contains("No routes match"),
+                    "{w}x{h} must explain the empty list:\n{text}"
+                );
+            }
+        }
+        // Esc clears the filter and the full catalog comes back.
+        view.handle_key(key(KeyCode::Esc));
+        assert!(view.step_len() > 0);
     }
 
     #[test]
