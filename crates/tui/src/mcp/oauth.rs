@@ -47,6 +47,22 @@ impl std::fmt::Display for McpAuthStatus {
     }
 }
 
+/// Context for a failed token refresh. An auth-required failure already
+/// flips the server to `◆ auth required` and offers the login tool; any
+/// other failure (a token endpoint answering something the client could
+/// not parse, a transport error) names the same remedy in words, because
+/// the operator otherwise sees only the provider's parse error (#5926).
+fn refresh_failure_context(server_name: &str, names_remedy: bool) -> String {
+    if names_remedy {
+        format!(
+            "refreshing MCP OAuth token for server {server_name}: the token endpoint did not answer the way the client expects; \
+             if this persists, run `codewhale mcp login {server_name}` (or `/mcp login {server_name}`) to re-authorize"
+        )
+    } else {
+        format!("refreshing MCP OAuth token for server {server_name}")
+    }
+}
+
 pub fn error_looks_auth_required(error: &anyhow::Error) -> bool {
     error_text_looks_auth_required(&format!("{error:#}"))
 }
@@ -430,12 +446,9 @@ impl McpOAuthRuntime {
             };
             self.clear_stored_tokens(reason).await?;
         }
-        Err(err).with_context(|| {
-            format!(
-                "refreshing MCP OAuth token for server {}",
-                self.inner.server_name
-            )
-        })
+        let server_name = self.inner.server_name.clone();
+        let names_remedy = !error_looks_auth_required(&err);
+        Err(err).with_context(|| refresh_failure_context(&server_name, names_remedy))
     }
 
     async fn try_refresh_and_persist(&self) -> Result<()> {
@@ -1615,6 +1628,18 @@ impl McpServerConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_refresh_parse_failure_names_the_login_remedy_and_the_server() {
+        let text = super::refresh_failure_context("supabase", true);
+        assert!(text.contains("server supabase"));
+        assert!(text.contains("codewhale mcp login supabase"), "{text}");
+        assert!(text.contains("/mcp login supabase"), "{text}");
+        // An auth-required failure keeps the plain context: the typed state
+        // and the login tool already carry the remedy.
+        let plain = super::refresh_failure_context("supabase", false);
+        assert_eq!(plain, "refreshing MCP OAuth token for server supabase");
+    }
+
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
