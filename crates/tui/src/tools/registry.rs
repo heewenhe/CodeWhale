@@ -695,6 +695,10 @@ pub struct AgentToolSurfaceOptions {
     /// Register the agent-callable `verify` self-critique tool (#4196).
     /// Gated by `Feature::Verify` (`[features] verify_tool`), default on.
     pub verify_tool_enabled: bool,
+    /// `request_user_input` payload ceilings from `[tools]` (#5949). Carried on
+    /// the surface options so model-spawned children inherit the parent's
+    /// configured limits instead of silently falling back to the defaults.
+    pub user_input_limits: super::user_input::UserInputLimits,
 }
 
 impl AgentToolSurfaceOptions {
@@ -709,6 +713,7 @@ impl AgentToolSurfaceOptions {
             speech_output_dir: None,
             goal_state: None,
             verify_tool_enabled: true,
+            user_input_limits: super::user_input::UserInputLimits::default(),
         }
     }
 }
@@ -1036,11 +1041,14 @@ impl ToolRegistryBuilder {
         )))
     }
 
-    /// Include request_user_input tool.
+    /// Include request_user_input tool under the session's configured payload
+    /// ceilings (`[tools] user_input_max_questions` / `user_input_max_options`,
+    /// #5949). The limits ride the tool instance so the validator, the JSON
+    /// schema, and the model-visible description cannot drift apart.
     #[must_use]
-    pub fn with_user_input_tool(self) -> Self {
+    pub fn with_user_input_tool(self, limits: super::user_input::UserInputLimits) -> Self {
         use super::user_input::RequestUserInputTool;
-        self.with_tool(Arc::new(RequestUserInputTool))
+        self.with_tool(Arc::new(RequestUserInputTool::new(limits)))
     }
 
     /// Include patch tools (`apply_patch`).
@@ -1248,12 +1256,16 @@ impl ToolRegistryBuilder {
 
     /// Include all agent tools under a typed shell policy.
     #[must_use]
-    pub fn with_agent_tools_policy(self, shell_policy: crate::worker_profile::ShellPolicy) -> Self {
+    pub fn with_agent_tools_policy(
+        self,
+        shell_policy: crate::worker_profile::ShellPolicy,
+        user_input_limits: super::user_input::UserInputLimits,
+    ) -> Self {
         let builder = self
             .with_file_tools()
             .with_note_tool()
             .with_search_tools()
-            .with_user_input_tool()
+            .with_user_input_tool(user_input_limits)
             .with_git_tools()
             .with_git_history_tools()
             .with_diagnostics_tool()
@@ -1297,7 +1309,7 @@ impl ToolRegistryBuilder {
         let verify_client = client.clone();
         let verify_model = model.clone();
         let mut builder = self
-            .with_agent_tools_policy(options.shell_policy)
+            .with_agent_tools_policy(options.shell_policy, options.user_input_limits)
             .with_todo_tool(todo_list)
             .with_plan_tool(plan_state)
             .with_review_tool(client.clone(), model.clone())

@@ -560,7 +560,7 @@ mod schema_json_container_tests {
 
     #[test]
     fn decodes_nested_containers_and_passes_tool_validation() {
-        let schema = crate::tools::user_input::RequestUserInputTool.input_schema();
+        let schema = crate::tools::user_input::RequestUserInputTool::default().input_schema();
         let encoded_options = serde_json::to_string(&json!([
             { "label": "Repository", "description": "Inspect the current repository" },
             { "label": "Workspace", "description": "Inspect the whole workspace" }

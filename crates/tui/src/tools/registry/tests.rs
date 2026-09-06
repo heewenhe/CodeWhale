@@ -787,7 +787,10 @@ fn readonly_verifier_context(workspace: &std::path::Path) -> ToolContext {
 fn machine_verifier_catalog_and_dispatch_add_only_bounded_run() {
     let tmp = tempdir().expect("tempdir");
     let registry = ToolRegistryBuilder::new()
-        .with_agent_tools_policy(crate::worker_profile::ShellPolicy::None)
+        .with_agent_tools_policy(
+            crate::worker_profile::ShellPolicy::None,
+            crate::tools::user_input::UserInputLimits::default(),
+        )
         .with_web_tools()
         .with_todo_tool(crate::tools::todo::new_shared_todo_list())
         .build(readonly_verifier_context(tmp.path()));
@@ -1376,7 +1379,10 @@ fn test_builder_with_agent_tools_policy_includes_finance() {
     let ctx = ToolContext::new(tmp.path().to_path_buf());
 
     let registry = ToolRegistryBuilder::new()
-        .with_agent_tools_policy(crate::worker_profile::ShellPolicy::None)
+        .with_agent_tools_policy(
+            crate::worker_profile::ShellPolicy::None,
+            crate::tools::user_input::UserInputLimits::default(),
+        )
         .build(ctx);
 
     assert!(registry.contains("finance"));
@@ -1388,7 +1394,10 @@ fn agent_tools_with_shell_policy_none_excludes_shell_tools() {
     let ctx = ToolContext::new(tmp.path().to_path_buf());
 
     let registry = ToolRegistryBuilder::new()
-        .with_agent_tools_policy(crate::worker_profile::ShellPolicy::None)
+        .with_agent_tools_policy(
+            crate::worker_profile::ShellPolicy::None,
+            crate::tools::user_input::UserInputLimits::default(),
+        )
         .build(ctx);
 
     assert!(!registry.contains("bash"));
@@ -1413,7 +1422,10 @@ fn agent_tools_with_shell_policy_readonly_exposes_only_run_only_bash() {
     let ctx = ToolContext::new(tmp.path().to_path_buf());
 
     let registry = ToolRegistryBuilder::new()
-        .with_agent_tools_policy(crate::worker_profile::ShellPolicy::ReadOnly)
+        .with_agent_tools_policy(
+            crate::worker_profile::ShellPolicy::ReadOnly,
+            crate::tools::user_input::UserInputLimits::default(),
+        )
         .build(ctx);
 
     assert!(registry.contains("bash"));
@@ -1460,7 +1472,10 @@ fn agent_tools_with_shell_policy_readonly_exposes_only_run_only_bash() {
 fn machine_readonly_catalog_is_exactly_the_evidence_profile() {
     let tmp = tempdir().expect("tempdir");
     let registry = ToolRegistryBuilder::new()
-        .with_agent_tools_policy(crate::worker_profile::ShellPolicy::ReadOnly)
+        .with_agent_tools_policy(
+            crate::worker_profile::ShellPolicy::ReadOnly,
+            crate::tools::user_input::UserInputLimits::default(),
+        )
         .with_web_tools()
         .with_todo_tool(crate::tools::todo::new_shared_todo_list())
         .build(readonly_scout_context(tmp.path(), true));
@@ -1527,7 +1542,10 @@ fn agent_tools_with_shell_policy_full_includes_shell_tools() {
     let ctx = ToolContext::new(tmp.path().to_path_buf());
 
     let registry = ToolRegistryBuilder::new()
-        .with_agent_tools_policy(crate::worker_profile::ShellPolicy::Full)
+        .with_agent_tools_policy(
+            crate::worker_profile::ShellPolicy::Full,
+            crate::tools::user_input::UserInputLimits::default(),
+        )
         .build(ctx);
 
     assert!(registry.contains("bash"));

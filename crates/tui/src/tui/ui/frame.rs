@@ -820,6 +820,7 @@ pub(crate) fn build_engine_config(app: &App, config: &Config) -> EngineConfig {
         search_api_key: config.search.as_ref().and_then(|s| s.api_key.clone()),
         search_base_url: config.search.as_ref().and_then(|s| s.base_url.clone()),
         tools_always_load: config.tools_always_load(),
+        user_input_limits: config.user_input_limits(),
         tools: config.tools.clone(),
         workspace_follow_symlinks: app.workspace_follow_symlinks,
         exec_policy_engine: config.exec_policy_engine.clone(),

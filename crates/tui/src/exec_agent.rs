@@ -331,6 +331,7 @@ pub(crate) async fn run_exec_agent(
         } else {
             execution_config.tools_always_load()
         },
+        user_input_limits: execution_config.user_input_limits(),
         tools: if fleet_authority_active {
             None
         } else {

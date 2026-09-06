@@ -28,6 +28,7 @@ impl Engine {
         options.speech_output_dir = self.config.speech_output_dir.clone();
         options.goal_state = Some(self.config.goal_state.clone());
         options.verify_tool_enabled = self.config.features.enabled(Feature::Verify);
+        options.user_input_limits = self.config.user_input_limits;
         options
     }
 
@@ -112,7 +113,7 @@ impl Engine {
 
         builder = builder
             .with_review_tool(client.clone(), model.to_string())
-            .with_user_input_tool();
+            .with_user_input_tool(self.config.user_input_limits);
 
         if self.config.features.enabled(Feature::WebSearch) {
             builder = builder.with_web_tools();

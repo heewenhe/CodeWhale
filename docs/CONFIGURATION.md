@@ -2622,6 +2622,24 @@ tools loaded on every request, add them to `[tools].always_load`:
 always_load = ["Git", "notify"]
 ```
 
+### `request_user_input` limits
+
+`request_user_input` asks the user a short batch of multiple-choice questions.
+Both ceilings are configurable (#5949): raise `user_input_max_questions` when a
+research or planning workflow legitimately needs more clarifications, lower it
+when interactive triage should stay terse.
+
+```toml
+[tools]
+user_input_max_questions = 6   # default 6, clamped to 1..=10
+user_input_max_options = 4     # default 4, clamped to 2..=10
+```
+
+The effective values are applied in three places at once: the tool's JSON
+schema (`minItems` / `maxItems`), its model-visible description, and the
+payload validator. A rejected payload names the key to raise, so the model can
+either resize the batch or tell the user which setting to change.
+
 ## Feature Flags
 
 Feature flags live under the `[features]` table and are merged across profiles.

@@ -3667,7 +3667,10 @@ impl Engine {
                     if tool_name == REQUEST_USER_INPUT_NAME {
                         let started_at = Instant::now();
                         let result = if *questions_allowed {
-                            match UserInputRequest::from_value(&tool_input) {
+                            match UserInputRequest::from_value_with_limits(
+                                &tool_input,
+                                self.config.user_input_limits,
+                            ) {
                                 Ok(request) => self
                                     .await_user_input(&tool_id, request)
                                     .await
