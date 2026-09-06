@@ -811,6 +811,9 @@ pub struct Engine {
     /// transient `ToolContext` (#4475).
     file_read_tracker: SharedFileReadTracker,
     mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
+    /// The tool-surface budget the current turn's catalog was shaped with,
+    /// so a mid-turn MCP refresh reshapes its slice the same way (#5939).
+    turn_tool_surface_budget: Option<crate::model_profile::ToolSurfaceBudget>,
     /// Last connection diagnosis for each configured MCP server.
     ///
     /// Failed transports are intentionally absent from `McpPool::connections`,
@@ -1688,6 +1691,7 @@ impl Engine {
             shell_manager,
             file_read_tracker,
             mcp_pool: None,
+            turn_tool_surface_budget: None,
             mcp_connection_errors: HashMap::new(),
             mcp_boot_in_flight: false,
             mcp_boot_rx: None,
@@ -4558,6 +4562,7 @@ impl Engine {
         // which is not necessarily the installed one under auto routing.
         let capability = route.capability_profile();
         let always_load = self.config.tools_always_load.clone();
+        self.turn_tool_surface_budget = Some(capability.tool_surface_budget);
         let mut catalog = build_model_tool_catalog_with_surface(
             tool_registry.to_api_tools_with_cache(true),
             mcp_tools,
