@@ -2102,3 +2102,415 @@ fn envelope_lifecycle_slot_is_independent_and_rejects_duplicates() {
     let lifecycle = inserted.into_parts().lifecycle.expect("inserted lifecycle");
     assert!(lifecycle.transition_blocked());
 }
+
+// ---------------------------------------------------------------------------
+// FEAT-024: session control contract (D2/D3/D6/D7).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn control_capability_is_stable_distinct_and_non_conflicting() {
+    let control = CommandCapabilities::SESSION_CONTROL;
+    for existing in [
+        CommandCapabilities::NONE,
+        CommandCapabilities::SESSION,
+        CommandCapabilities::MODEL,
+        CommandCapabilities::COST,
+        CommandCapabilities::MODE_POLICY,
+        CommandCapabilities::SYSTEM_PROMPT,
+        CommandCapabilities::SKILLS,
+        CommandCapabilities::WORKSPACE,
+        CommandCapabilities::PRESENTATION,
+        CommandCapabilities::MEDIA,
+        CommandCapabilities::MEMORY,
+        CommandCapabilities::PROJECT,
+        CommandCapabilities::SKILL_GROUP,
+        CommandCapabilities::PLUGIN,
+        CommandCapabilities::SESSION_LIFECYCLE,
+    ] {
+        assert_ne!(control, existing, "SESSION_CONTROL must not collide");
+    }
+    assert!(!CommandCapabilities::NONE.contains(control));
+    assert!(control.contains(control));
+    assert!(
+        control
+            .union(CommandCapabilities::PRESENTATION)
+            .contains(control)
+    );
+    assert!(
+        control
+            .union(CommandCapabilities::PRESENTATION)
+            .contains(CommandCapabilities::PRESENTATION)
+    );
+    assert!(!CommandCapabilities::SESSION_LIFECYCLE.contains(control));
+    assert!(!control.contains(CommandCapabilities::SESSION_LIFECYCLE));
+    // Storage remains u16-backed by construction: bit 14 (1 << 14 = 16384)
+    // fits the backing `u16` without the speculative widening FEAT-023's
+    // maintainer review ruled out.
+}
+
+/// Deterministic fake control facet: every delegate returns canned portable
+/// values or error text so the contract transport is exercised exactly.
+#[derive(Default)]
+struct FakeControl {
+    blocked: bool,
+    relay: Option<RelayProjection>,
+    resume: Option<Result<ResumeSource, String>>,
+    import: Option<Result<ResumeImportReceipt, String>>,
+    sanitized_title: Option<String>,
+    rename: Option<Result<SessionTitleReceipt, String>>,
+    title_report: Option<TitleReport>,
+    set_title: Option<Result<(), String>>,
+    clear_title: Option<Result<(), String>>,
+    remote_status: Option<String>,
+    remote_link: Option<Option<RemoteLink>>,
+    browser_open: Option<RemoteOpenOutcome>,
+    start_info: Option<RemoteStartInfo>,
+    stop_refusal: Option<Option<String>>,
+    hosted: Option<Option<HostedWorkTarget>>,
+}
+
+impl CommandSessionControlContext for FakeControl {
+    fn transition_blocked(&self) -> bool {
+        self.blocked
+    }
+    fn relay_projection(&self) -> RelayProjection {
+        self.relay
+            .clone()
+            .expect("unexpected relay_projection() on empty fake")
+    }
+    fn open_resume_picker(&mut self) {}
+    fn resolve_resume_source(&mut self, raw: &str) -> Result<ResumeSource, String> {
+        self.resume.clone().unwrap_or_else(|| {
+            Err(format!(
+                "unexpected resolve_resume_source({raw}) on empty fake"
+            ))
+        })
+    }
+    fn import_session_file(&mut self, path: PathBuf) -> Result<ResumeImportReceipt, String> {
+        self.import.clone().unwrap_or_else(|| {
+            Err(format!(
+                "unexpected import_session_file({path:?}) on empty fake"
+            ))
+        })
+    }
+    fn sanitize_session_title(&self, raw: &str) -> String {
+        self.sanitized_title
+            .clone()
+            .unwrap_or_else(|| raw.to_string())
+    }
+    fn rename_session(&mut self, title: &str) -> Result<SessionTitleReceipt, String> {
+        self.rename
+            .clone()
+            .unwrap_or_else(|| Err(format!("unexpected rename_session({title}) on empty fake")))
+    }
+    fn title_report(&self) -> TitleReport {
+        self.title_report
+            .clone()
+            .expect("unexpected title_report() on empty fake")
+    }
+    fn set_window_title(&mut self, title: String) -> Result<(), String> {
+        self.set_title.clone().unwrap_or_else(|| {
+            Err(format!(
+                "unexpected set_window_title({title}) on empty fake"
+            ))
+        })
+    }
+    fn clear_window_title(&mut self) -> Result<(), String> {
+        self.clear_title
+            .clone()
+            .unwrap_or_else(|| Err("unexpected clear_window_title() on empty fake".to_string()))
+    }
+    fn remote_status(&self) -> String {
+        self.remote_status
+            .clone()
+            .expect("unexpected remote_status() on empty fake")
+    }
+    fn remote_link(&self) -> Option<RemoteLink> {
+        self.remote_link
+            .clone()
+            .expect("unexpected remote_link() on empty fake")
+    }
+    fn remote_browser_open(&self) -> RemoteOpenOutcome {
+        self.browser_open
+            .clone()
+            .expect("unexpected remote_browser_open() on empty fake")
+    }
+    fn remote_start_info(&self) -> RemoteStartInfo {
+        self.start_info
+            .clone()
+            .expect("unexpected remote_start_info() on empty fake")
+    }
+    fn remote_stop_refusal(&self) -> Option<String> {
+        self.stop_refusal
+            .clone()
+            .expect("unexpected remote_stop_refusal() on empty fake")
+    }
+    fn resolve_hosted_work_target(&self) -> Option<HostedWorkTarget> {
+        self.hosted
+            .clone()
+            .expect("unexpected resolve_hosted_work_target() on empty fake")
+    }
+}
+
+fn control_relay_projection() -> RelayProjection {
+    RelayProjection {
+        compact_template: "# Session relay".to_string(),
+        workspace: "/workspace/control".to_string(),
+        mode: "operate".to_string(),
+        model: "control-model".to_string(),
+        goal_objective: Some("ship the slice".to_string()),
+        goal_token_budget: Some(42_000),
+        todos: TodoProjection::Body("- [ ] port relay".to_string()),
+        plan: PlanProjection::Sections(PlanSections {
+            title: Some("Plan title".to_string()),
+            items: vec![PlanStep {
+                status: PlanStepStatus::InProgress,
+                text: "port the control slice".to_string(),
+            }],
+            ..PlanSections::default()
+        }),
+    }
+}
+
+#[test]
+fn control_facet_is_object_safe_and_transports_every_outcome() {
+    // Object safety: usable behind a single `dyn` reference.
+    fn accepts_dyn(_: &dyn CommandSessionControlContext) {}
+    fn accepts_dyn_mut(_: &mut dyn CommandSessionControlContext) {}
+
+    let mut fake = FakeControl {
+        blocked: true,
+        relay: Some(control_relay_projection()),
+        resume: Some(Ok(ResumeSource::Session {
+            load_path: Some(PathBuf::from("/tmp/sessions/abc123.json")),
+            truncated_id: "abc123".to_string(),
+            title: "Control Session".to_string(),
+        })),
+        import: Some(Ok(ResumeImportReceipt {
+            truncated_id: "imp-9".to_string(),
+            entry_count: 12,
+            leaf_display: "leaf-3".to_string(),
+        })),
+        sanitized_title: Some("Renamed".to_string()),
+        rename: Some(Ok(SessionTitleReceipt {
+            title: "Renamed".to_string(),
+        })),
+        title_report: Some(TitleReport {
+            effective: "task-7".to_string(),
+            source: TitleSource::Session,
+        }),
+        set_title: Some(Ok(())),
+        clear_title: Some(Ok(())),
+        remote_status: Some("live".to_string()),
+        remote_link: Some(Some(RemoteLink {
+            url: "https://remote.example/s".to_string(),
+            computer_url: Some("https://remote.example/c".to_string()),
+        })),
+        browser_open: Some(RemoteOpenOutcome::Opened {
+            url: "https://remote.example/s".to_string(),
+        }),
+        start_info: Some(RemoteStartInfo { connecting: true }),
+        stop_refusal: Some(None),
+        hosted: Some(Some(HostedWorkTarget {
+            url: "https://app.codewhale.net/work?repo=A%2FB".to_string(),
+            repo: "A/B".to_string(),
+            branch: "main".to_string(),
+        })),
+    };
+    accepts_dyn(&fake);
+    accepts_dyn_mut(&mut fake);
+
+    assert!(fake.transition_blocked());
+    let relay = fake.relay_projection();
+    assert_eq!(relay.model, "control-model");
+    assert_eq!(relay.goal_token_budget, Some(42_000));
+    assert!(matches!(relay.todos, TodoProjection::Body(_)));
+    match relay.plan {
+        PlanProjection::Sections(sections) => {
+            assert_eq!(sections.title.as_deref(), Some("Plan title"));
+            assert_eq!(sections.items.len(), 1);
+            assert_eq!(sections.items[0].status, PlanStepStatus::InProgress);
+        }
+        other => panic!("expected Sections plan, got {other:?}"),
+    }
+    let resolved = fake
+        .resolve_resume_source("abc123")
+        .expect("resume resolution ok");
+    match resolved {
+        ResumeSource::Session {
+            load_path, title, ..
+        } => {
+            assert_eq!(load_path, Some(PathBuf::from("/tmp/sessions/abc123.json")));
+            assert_eq!(title, "Control Session");
+        }
+        other => panic!("expected Session resolution, got {other:?}"),
+    }
+    let imported = fake
+        .import_session_file(PathBuf::from("/tmp/import.json"))
+        .expect("import ok");
+    assert_eq!(imported.truncated_id, "imp-9");
+    assert_eq!(imported.entry_count, 12);
+    assert_eq!(imported.leaf_display, "leaf-3");
+    assert_eq!(fake.sanitize_session_title("raw"), "Renamed");
+    let renamed = fake.rename_session("Renamed").expect("rename ok");
+    assert_eq!(renamed.title, "Renamed");
+    let report = fake.title_report();
+    assert_eq!(report.effective, "task-7");
+    assert!(matches!(report.source, TitleSource::Session));
+    fake.set_window_title("task-7".to_string()).expect("set ok");
+    fake.clear_window_title().expect("clear ok");
+    assert_eq!(fake.remote_status(), "live");
+    let link = fake.remote_link().expect("link present");
+    assert_eq!(link.url, "https://remote.example/s");
+    assert!(matches!(
+        fake.remote_browser_open(),
+        RemoteOpenOutcome::Opened { .. }
+    ));
+    assert!(fake.remote_start_info().connecting);
+    assert_eq!(fake.remote_stop_refusal(), None);
+    let hosted = fake.resolve_hosted_work_target().expect("target present");
+    assert_eq!(hosted.repo, "A/B");
+    assert_eq!(hosted.branch, "main");
+}
+
+#[test]
+fn control_error_and_empty_states_transport_exactly() {
+    let mut fake = FakeControl {
+        blocked: false,
+        resume: Some(Err("could not open sessions directory: boom".to_string())),
+        import: Some(Err(
+            "File x.json is not a recognized session export".to_string()
+        )),
+        rename: Some(Err("Could not save session: boom".to_string())),
+        set_title: Some(Err("Could not save session: boom".to_string())),
+        clear_title: Some(Err("Could not save session: boom".to_string())),
+        remote_link: Some(None),
+        browser_open: Some(RemoteOpenOutcome::NoLink),
+        stop_refusal: Some(Some(
+            "stop refused while a remote turn is active".to_string(),
+        )),
+        hosted: Some(None),
+        ..FakeControl::default()
+    };
+    assert!(!fake.transition_blocked());
+    assert_eq!(
+        fake.resolve_resume_source("x").unwrap_err(),
+        "could not open sessions directory: boom"
+    );
+    assert_eq!(
+        fake.import_session_file(PathBuf::from("x.json"))
+            .unwrap_err(),
+        "File x.json is not a recognized session export"
+    );
+    assert_eq!(
+        fake.rename_session("t").unwrap_err(),
+        "Could not save session: boom"
+    );
+    assert_eq!(
+        fake.set_window_title("task".to_string()).unwrap_err(),
+        "Could not save session: boom"
+    );
+    assert_eq!(
+        fake.clear_window_title().unwrap_err(),
+        "Could not save session: boom"
+    );
+    assert_eq!(fake.remote_link(), None);
+    assert!(matches!(
+        fake.remote_browser_open(),
+        RemoteOpenOutcome::NoLink
+    ));
+    assert_eq!(
+        fake.remote_stop_refusal().as_deref(),
+        Some("stop refused while a remote turn is active")
+    );
+    assert_eq!(fake.resolve_hosted_work_target(), None);
+
+    // Empty-state variants: absent to-do/plan and no effective title transport.
+    fake.relay = Some(RelayProjection {
+        todos: TodoProjection::Absent,
+        plan: PlanProjection::Absent,
+        ..control_relay_projection()
+    });
+    let relay = fake.relay_projection();
+    assert!(matches!(relay.todos, TodoProjection::Absent));
+    assert!(matches!(relay.plan, PlanProjection::Absent));
+    fake.title_report = Some(TitleReport {
+        effective: "unset".to_string(),
+        source: TitleSource::None,
+    });
+    assert!(matches!(fake.title_report().source, TitleSource::None));
+    fake.clear_title = Some(Ok(()));
+    fake.clear_window_title().expect("cleared");
+}
+
+#[test]
+fn envelope_control_slot_is_independent_and_rejects_duplicates() {
+    let mut first = FakeControl::default();
+    let mut second = FakeControl::default();
+    let mut lifecycle = FakeLifecycle::default();
+
+    let parts = CommandContexts::empty()
+        .with_control(&mut first)
+        .with_lifecycle(&mut lifecycle)
+        .into_parts();
+    assert!(
+        parts.control.is_some(),
+        "control slot must be present when declared"
+    );
+    assert!(
+        parts.lifecycle.is_some(),
+        "lifecycle slot may coexist with control"
+    );
+    assert!(
+        parts.session.is_none()
+            && parts.plugin.is_none()
+            && parts.skill_group.is_none()
+            && parts.presentation.is_none(),
+        "unrelated slots must stay absent (exact exposure)"
+    );
+
+    let bare = CommandContexts::empty().into_parts();
+    assert!(bare.control.is_none(), "undeclared control stays absent");
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        CommandContexts::empty()
+            .with_control(&mut first)
+            .with_control(&mut second);
+    }));
+    assert!(
+        result.is_err(),
+        "duplicate control slot must assert deterministically"
+    );
+
+    // Reading through the dyn facet works after insertion.
+    first.blocked = true;
+    let inserted = CommandContexts::empty().with_control(&mut first);
+    let control = inserted.into_parts().control.expect("inserted control");
+    assert!(control.transition_blocked());
+}
+
+#[test]
+fn control_surface_does_not_widen_session_or_lifecycle_facets() {
+    // The basic session and lifecycle facets still expose exactly their own
+    // method surface alongside the new control slot: all three may populate an
+    // envelope at once without colliding, and control does not add behavior to
+    // the existing facets.
+    let mut session = Session;
+    let mut lifecycle = FakeLifecycle::default();
+    let mut control = FakeControl {
+        blocked: true,
+        ..FakeControl::default()
+    };
+
+    let mut parts = CommandContexts::empty()
+        .with_session(&mut session)
+        .with_lifecycle(&mut lifecycle)
+        .with_control(&mut control)
+        .into_parts();
+    assert_eq!(
+        parts.session.as_deref().unwrap().session_id().as_deref(),
+        Some("session")
+    );
+    assert!(!parts.lifecycle.as_deref_mut().unwrap().transition_blocked());
+    assert!(parts.control.as_deref_mut().unwrap().transition_blocked());
+}

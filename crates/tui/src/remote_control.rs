@@ -1601,6 +1601,20 @@ impl RemoteControlController {
         }
     }
 
+    /// Test-only: advertise a validated live session link without a control
+    /// plane. Mirrors the shape the runner-lease parser installs (`Connected`
+    /// plus validated links) so `/rc link`/`/rc open` routing can be exercised
+    /// deterministically offline.
+    #[cfg(test)]
+    pub(crate) fn install_live_link_for_test(&mut self, run_url: &str, computer_url: Option<&str>) {
+        self.status = Status::Connected;
+        self.status_detail = "test link".to_string();
+        self.links = RemoteLinks {
+            run_url: Some(run_url.to_string()),
+            computer_url: computer_url.map(str::to_string),
+        };
+    }
+
     pub fn status_line(&self) -> String {
         match self.status {
             Status::Off => "Remote control: off".to_string(),

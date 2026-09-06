@@ -1,7 +1,7 @@
 //! FEAT-015 TUI command-boundary surface.
 //!
 //! This module holds the TUI-owned pieces of the staged command migration:
-//! the pending-frontier projection (D4), the seven capability facet adapters
+//! the pending-frontier projection (D4), the capability facet adapters
 //! (D1), boundary-value and localization-key mappings (D3/D8), the envelope
 //! construction helper (D1), and the seam helpers (D7-D9). It is deliberately
 //! the only new TUI module for the migration surface; the production
@@ -14,7 +14,7 @@
 //!
 //! ## Authoritative host-proxy design (D1)
 //!
-//! `CommandContexts` holds twelve independently borrowed facet objects, while
+//! `CommandContexts` holds fifteen independently borrowed facet objects, while
 //! important behavior (mode transitions, model invalidation, cost accounting,
 //! skill refresh) is authoritative on `App`. The adapters therefore share a
 //! synchronous TUI-owned host proxy. Each trait call borrows `App` only for the
@@ -35,21 +35,24 @@ use codewhale_command_contract::facets::{
     CommandApprovalState, CommandCostContext, CommandMediaContext, CommandMemoryContext,
     CommandModePolicyContext, CommandModelContext, CommandPluginContext,
     CommandPresentationContext, CommandProjectContext, CommandSessionContext,
-    CommandSessionLifecycleContext, CommandSkillGroupContext, CommandSkillsContext,
-    CommandSystemPromptContext, CommandWorkspaceContext, MediaAttachmentReceipt, MemoryDelete,
-    MemoryDeleteScope, MemoryExport, MemoryGetOutcome, MemoryHit, MemoryImportOutcome,
-    MemoryReindex, MemoryRememberTarget, MemoryRemembered, MemoryStatus, PluginDetail,
+    CommandSessionControlContext, CommandSessionLifecycleContext, CommandSkillGroupContext,
+    CommandSkillsContext, CommandSystemPromptContext, CommandWorkspaceContext, HostedWorkTarget,
+    MediaAttachmentReceipt, MemoryDelete, MemoryDeleteScope, MemoryExport, MemoryGetOutcome,
+    MemoryHit, MemoryImportOutcome, MemoryReindex, MemoryRememberTarget, MemoryRemembered,
+    MemoryStatus, PlanProjection, PlanSections, PlanStep, PlanStepStatus, PluginDetail,
     PluginDiagnostic, PluginDiagnosticLevel, PluginExportReceipt, PluginLegacyScan,
     PluginLegacyTool, PluginManagedCandidate, PluginManagedScan, PluginMarketplaceAddReceipt,
     PluginMarketplaceCandidate, PluginMarketplaceCatalog, PluginMarketplaceInstallPlan,
     PluginMarketplaceState, PluginMcpServerDetail, PluginMcpTransport, PluginMutationOutcome,
     PluginMutationReceipt, PluginSuggestion, PluginSummary, ProjectGoalState, ProjectGoalStatus,
-    ProjectShareProjection, RemoteRegistryOutcome, RemoteSkillEntry, ReviewOutcome,
+    ProjectShareProjection, RelayProjection, RemoteLink, RemoteOpenOutcome, RemoteRegistryOutcome,
+    RemoteSkillEntry, RemoteStartInfo, ResumeImportReceipt, ResumeSource, ReviewOutcome,
     SessionArchiveReceipt, SessionBranchOutcome, SessionForkFromReceipt, SessionForkReceipt,
-    SessionNewReceipt, SessionSaveReceipt, SessionSyncPayload, SkillActivationError,
-    SkillActivationOutcome, SkillBundledTier, SkillEntry, SkillMutationOutcome,
-    SkillMutationReceipt, SkillRecommendation, SkillRegistryProjection, SkillSourceKind,
-    SkillSyncEntry, SkillSyncOutcome, SkillTargetScope, SnapshotEntry, TreeBodyProjection,
+    SessionNewReceipt, SessionSaveReceipt, SessionSyncPayload, SessionTitleReceipt,
+    SkillActivationError, SkillActivationOutcome, SkillBundledTier, SkillEntry,
+    SkillMutationOutcome, SkillMutationReceipt, SkillRecommendation, SkillRegistryProjection,
+    SkillSourceKind, SkillSyncEntry, SkillSyncOutcome, SkillTargetScope, SnapshotEntry,
+    TitleReport, TitleSource, TodoProjection, TreeBodyProjection,
 };
 #[cfg(test)]
 use codewhale_command_contract::handler::ContextParts;
@@ -63,6 +66,7 @@ use codewhale_execpolicy::ApprovalMode;
 
 use crate::commands::groups::plugins::plugin_network_policy;
 
+use crate::dependencies::ExternalTool as _;
 use crate::localization::{MessageId, tr};
 use crate::network_policy::NetworkPolicy;
 use crate::pricing::CostCurrency;
@@ -269,7 +273,7 @@ pub(crate) fn key_to_message_id(key: &'static str) -> Option<MessageId> {
 
 /// Shared TUI host hidden behind the portable command facets.
 ///
-/// The envelope needs ten independently borrowed facet objects, while the
+/// The envelope needs fifteen independently borrowed facet objects, while the
 /// authoritative mutation methods live on `App`. Each adapter therefore owns
 /// an `Rc` clone of this synchronous host proxy. Trait calls borrow `App` only
 /// for the duration of one method, delegate to the real TUI authority, and
@@ -824,6 +828,643 @@ impl CommandSessionLifecycleContext for SessionLifecycleAdapter<'_> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// FEAT-024 Phase 4: relocated host machinery for the control slice.
+//
+// These helpers were extracted from the legacy `/remote-env` command body
+// when that file became portable; they are host-owned and stay in TUI (the
+// future movable group never names them).
+// ---------------------------------------------------------------------------
+
+const HOSTED_WORK_URL: &str = "https://app.codewhale.net/work";
+const MAX_GIT_VALUE_BYTES: usize = 4 * 1024;
+
+/// Validated hosted-work Git target (repo slug + checked-out branch).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RemoteEnvTarget {
+    repo: String,
+    branch: String,
+}
+
+/// Resolve the hosted-work launcher target for a workspace: read the origin
+/// URL and symbolic branch, normalize the repository slug against the
+/// allowlist, and encode the launcher URL. Credentials never appear in the
+/// returned values.
+fn resolve_target(workspace: &Path) -> Option<RemoteEnvTarget> {
+    let origin = read_git_value(
+        workspace,
+        &["config", "--local", "--get", "remote.origin.url"],
+    )?;
+    let repo = normalize_repo_slug(&origin)?;
+    let branch = read_git_value(workspace, &["symbolic-ref", "--quiet", "--short", "HEAD"])?;
+    if !valid_branch_name(&branch) {
+        return None;
+    }
+    Some(RemoteEnvTarget { repo, branch })
+}
+
+fn hosted_work_url(repo: &str, branch: &str) -> String {
+    format!(
+        "{HOSTED_WORK_URL}?repo={}&branch={}",
+        urlencoding::encode(repo),
+        urlencoding::encode(branch),
+    )
+}
+
+fn read_git_value(workspace: &Path, args: &[&str]) -> Option<String> {
+    let mut command = crate::dependencies::Git::command()?;
+    let output = command.arg("-C").arg(workspace).args(args).output().ok()?;
+    if !output.status.success()
+        || output.stdout.is_empty()
+        || output.stdout.len() > MAX_GIT_VALUE_BYTES
+    {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?;
+    let value = value.trim_end_matches(&['\r', '\n'][..]);
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn valid_branch_name(branch: &str) -> bool {
+    if branch.is_empty() || branch.len() > MAX_GIT_VALUE_BYTES {
+        return false;
+    }
+    let Some(mut command) = crate::dependencies::Git::command() else {
+        return false;
+    };
+    command
+        .args(["check-ref-format", "--branch"])
+        .arg(branch)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn normalize_repo_slug(origin: &str) -> Option<String> {
+    let origin = origin.trim();
+    if origin.is_empty()
+        || origin.len() > MAX_GIT_VALUE_BYTES
+        || origin.chars().any(char::is_control)
+    {
+        return None;
+    }
+
+    let (host, path) = if starts_with_ascii_case(origin, "https://") {
+        split_url_origin(&origin["https://".len()..], UrlScheme::Https)?
+    } else if starts_with_ascii_case(origin, "ssh://") {
+        split_url_origin(&origin["ssh://".len()..], UrlScheme::Ssh)?
+    } else {
+        split_scp_origin(origin)?
+    };
+    if !matches!(
+        host.to_ascii_lowercase().as_str(),
+        "github.com" | "cnb.cool"
+    ) {
+        return None;
+    }
+    normalize_repo_path(path)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum UrlScheme {
+    Https,
+    Ssh,
+}
+
+fn starts_with_ascii_case(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+}
+
+fn split_url_origin(origin: &str, scheme: UrlScheme) -> Option<(&str, &str)> {
+    let (authority, path) = origin.split_once('/')?;
+    if authority.is_empty() || path.is_empty() {
+        return None;
+    }
+    let host_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = match host_port.rsplit_once(':') {
+        Some((host, port))
+            if !host.is_empty()
+                && !port.is_empty()
+                && port.bytes().all(|byte| byte.is_ascii_digit())
+                && (matches!(scheme, UrlScheme::Ssh) || port == "443") =>
+        {
+            host
+        }
+        Some(_) => return None,
+        None => host_port,
+    };
+    (!host.is_empty()).then_some((host, path))
+}
+
+fn split_scp_origin(origin: &str) -> Option<(&str, &str)> {
+    let (authority, path) = origin.split_once(':')?;
+    let (_, host) = authority.rsplit_once('@')?;
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some((host, path))
+}
+
+fn normalize_repo_path(path: &str) -> Option<String> {
+    if path.chars().any(|ch| matches!(ch, '?' | '#' | '\\')) {
+        return None;
+    }
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let mut parts = path.split('/');
+    let namespace = parts.next()?;
+    let repository = parts.next()?;
+    if parts.next().is_some()
+        || !valid_repo_component(namespace)
+        || !valid_repo_component(repository)
+    {
+        return None;
+    }
+    Some(format!("{namespace}/{repository}"))
+}
+
+fn valid_repo_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && !matches!(value, "." | "..")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+// ---------------------------------------------------------------------------
+// Session control adapter (FEAT-024 D4/D5)
+//
+// Sole host owner of concrete control machinery for the six control commands:
+// relay snapshot reads (goal/plan/work/todo/compact-template), rename/title
+// persistence (sanitization, checkpoint recovery, live synchronization, save,
+// publication, redraw), resume routing/imports, remote-control state and the
+// synchronous single-attempt browser launch, and hosted-work Git target
+// resolution. Every delegate reproduces the baseline check/mutation order
+// exactly (transition gate before resume I/O, save before publication,
+// browser launch without retry/deferral) and returns portable
+// projections/receipts or the exact host-error text the baseline surfaces.
+// No `SessionManager`, saved-session/container type, `SessionPickerView`,
+// remote-control service, Git wrapper, configuration, model/history type,
+// lock, or host callback crosses the facet.
+// ---------------------------------------------------------------------------
+pub(crate) struct SessionControlAdapter<'a> {
+    host: SharedCommandHost<'a>,
+}
+
+impl CommandSessionControlContext for SessionControlAdapter<'_> {
+    fn transition_blocked(&self) -> bool {
+        self.host.app.borrow().session_transition_blocked()
+    }
+
+    fn relay_projection(&self) -> RelayProjection {
+        let app = self.host.app.borrow();
+        let plan = match app.plan_state.try_lock() {
+            Ok(plan) => {
+                let snapshot = plan.snapshot();
+                if snapshot.is_empty() {
+                    PlanProjection::Absent
+                } else {
+                    PlanProjection::Sections(plan_snapshot_to_sections(&snapshot))
+                }
+            }
+            Err(_) => PlanProjection::Busy,
+        };
+        let todos = match app.work_state_snapshot() {
+            Ok(Some(state)) => match crate::todo_snapshot::todo_snapshot_body(&state.todos) {
+                Some(body) => TodoProjection::Body(body),
+                None => TodoProjection::Absent,
+            },
+            Ok(None) => TodoProjection::Absent,
+            Err(_) => TodoProjection::Unavailable,
+        };
+        RelayProjection {
+            compact_template: crate::prompts::COMPACT_TEMPLATE.to_string(),
+            workspace: app.workspace.display().to_string(),
+            mode: app.mode.label().to_string(),
+            model: app.model_display_label(),
+            goal_objective: app.goal.objective.clone(),
+            goal_token_budget: app.goal.token_budget,
+            todos,
+            plan,
+        }
+    }
+
+    fn open_resume_picker(&mut self) {
+        let mut app = self.host.app.borrow_mut();
+        let picker =
+            crate::tui::session_picker::SessionPickerView::new(&app.workspace, app.ui_locale);
+        app.view_stack.push(picker);
+    }
+
+    fn resolve_resume_source(&mut self, raw: &str) -> Result<ResumeSource, String> {
+        // Baseline order: direct path (or `.json` existing path) first, then
+        // workspace-relative, then session id/prefix, then inline container.
+        let raw_path = PathBuf::from(raw);
+        if raw_path.is_file() || (raw.ends_with(".json") && Path::new(raw).exists()) {
+            return Ok(ResumeSource::File(raw_path));
+        }
+        let workspace_relative = {
+            let app = self.host.app.borrow();
+            let ws_path = app.workspace.join(raw);
+            ws_path.is_file().then_some(ws_path)
+        };
+        if let Some(ws_path) = workspace_relative {
+            return Ok(ResumeSource::File(ws_path));
+        }
+        let manager = match crate::session_manager::SessionManager::default_location() {
+            Ok(m) => m,
+            Err(e) => return Err(format!("could not open sessions directory: {e}")),
+        };
+        match manager
+            .load_session(raw)
+            .or_else(|_| manager.load_session_by_prefix(raw))
+        {
+            Ok(sess) => {
+                let path = manager
+                    .sessions_dir()
+                    .join(format!("{}.json", sess.metadata.id));
+                Ok(ResumeSource::Session {
+                    load_path: path.exists().then_some(path),
+                    truncated_id: crate::session_manager::truncate_id(&sess.metadata.id)
+                        .to_string(),
+                    title: sess.metadata.title,
+                })
+            }
+            Err(e) => {
+                if let Ok(container) = crate::session_tree::SessionImportContainer::from_json(raw) {
+                    let mut app = self.host.app.borrow_mut();
+                    let receipt = import_session_container(&mut app, container)?;
+                    Ok(ResumeSource::Imported(receipt))
+                } else {
+                    Ok(ResumeSource::NotFound {
+                        raw: raw.to_string(),
+                        error: e.to_string(),
+                    })
+                }
+            }
+        }
+    }
+
+    fn import_session_file(&mut self, path: PathBuf) -> Result<ResumeImportReceipt, String> {
+        let mut app = self.host.app.borrow_mut();
+        import_foreign_file(&mut app, &path)
+    }
+
+    fn sanitize_session_title(&self, raw_title: &str) -> String {
+        crate::session_manager::sanitize_session_title(raw_title)
+    }
+
+    fn rename_session(&mut self, new_title: &str) -> Result<SessionTitleReceipt, String> {
+        let mut app = self.host.app.borrow_mut();
+        let session_id = match &app.current_session_id {
+            Some(id) => id.clone(),
+            None => {
+                return Err(
+                    "No active session. Send a message first to start a session.".to_string(),
+                );
+            }
+        };
+        let manager = match crate::session_manager::SessionManager::default_location() {
+            Ok(m) => m,
+            Err(e) => return Err(format!("Could not open sessions directory: {e}")),
+        };
+
+        // Mirrors the baseline `/rename` write path exactly: load (with
+        // first-snapshot recovery), sync live state, snapshot Work state,
+        // carry context/artifacts/route/cost/model/workspace/mode metadata,
+        // persist, then publish. Publication failures keep their post-save
+        // partial-success semantics.
+        let mut session = match manager.load_session(&session_id) {
+            Ok(s) => s,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                match live_session_before_first_snapshot(&manager, &session_id, &app) {
+                    Some(s) => s,
+                    None => return Err(format!("Could not load session: {err}")),
+                }
+            }
+            Err(e) => return Err(format!("Could not load session: {e}")),
+        };
+        session = crate::session_manager::update_session(
+            session,
+            &app.api_messages,
+            u64::from(app.session.total_tokens),
+            app.system_prompt.as_ref(),
+        );
+        session.work_state = match app.work_state_snapshot() {
+            Ok(state) => state,
+            Err(err) => {
+                return Err(format!(
+                    "Could not snapshot Work state before rename: {err}"
+                ));
+            }
+        };
+        session.context_references = app.session_context_references.clone();
+        session.artifacts = app.session_artifacts.clone();
+        session.last_auto_route = app.auto_route_for_persistence();
+        session.metadata.model = app.model_selection_for_persistence();
+        session
+            .metadata
+            .set_model_provider_route(app.api_provider.as_str(), app.provider_id_for_persistence());
+        session.metadata.workspace.clone_from(&app.workspace);
+        session.metadata.mode = Some(app.mode.as_setting().to_string());
+        app.sync_cost_to_metadata(&mut session.metadata);
+        session.metadata.title = new_title.to_string();
+
+        match manager.save_session(&session) {
+            Ok(_) => {
+                app.current_session_metadata = Some(session.metadata.clone());
+                app.session_title = Some(new_title.to_string());
+                if let Err(err) = app.publish_pending_work_state() {
+                    return Err(format!(
+                        "Session renamed, but Work views were not published: {err}"
+                    ));
+                }
+                Ok(SessionTitleReceipt {
+                    title: new_title.to_string(),
+                })
+            }
+            Err(e) => Err(format!("Could not save session: {e}")),
+        }
+    }
+
+    fn title_report(&self) -> TitleReport {
+        let app = self.host.app.borrow();
+        let source = if app.window_title.is_some() {
+            TitleSource::Session
+        } else if app.title_default.is_some() {
+            TitleSource::ConfigDefault
+        } else {
+            TitleSource::None
+        };
+        TitleReport {
+            effective: app.window_title_prefix().unwrap_or("unset").to_string(),
+            source,
+        }
+    }
+
+    fn set_window_title(&mut self, title: String) -> Result<(), String> {
+        let mut app = self.host.app.borrow_mut();
+        persist_window_title(&mut app, Some(title))
+    }
+
+    fn clear_window_title(&mut self) -> Result<(), String> {
+        let mut app = self.host.app.borrow_mut();
+        persist_window_title(&mut app, None)
+    }
+
+    fn remote_status(&self) -> String {
+        self.host.app.borrow().remote_control.status_line()
+    }
+
+    fn remote_link(&self) -> Option<RemoteLink> {
+        let app = self.host.app.borrow();
+        let url = app.remote_control.run_url()?.to_string();
+        Some(RemoteLink {
+            computer_url: app.remote_control.computer_url().map(str::to_string),
+            url,
+        })
+    }
+
+    fn remote_browser_open(&self) -> RemoteOpenOutcome {
+        let app = self.host.app.borrow();
+        let Some(url) = app.remote_control.run_url().map(str::to_string) else {
+            return RemoteOpenOutcome::NoLink;
+        };
+        // Synchronous single attempt through the authoritative URL-opening
+        // helper; never retried and never deferred to an external-URL action.
+        let launched = crate::utils::open_url(&url).is_ok();
+        map_browser_open_result(url, launched)
+    }
+
+    fn remote_start_info(&self) -> RemoteStartInfo {
+        let app = self.host.app.borrow();
+        RemoteStartInfo {
+            connecting: app.is_loading || app.dispatch_in_flight,
+        }
+    }
+
+    fn remote_stop_refusal(&self) -> Option<String> {
+        self.host.app.borrow().remote_control.stop_refusal().clone()
+    }
+
+    fn resolve_hosted_work_target(&self) -> Option<HostedWorkTarget> {
+        let app = self.host.app.borrow();
+        let target = resolve_target(&app.workspace)?;
+        let url = hosted_work_url(&target.repo, &target.branch);
+        Some(HostedWorkTarget {
+            url,
+            repo: target.repo,
+            branch: target.branch,
+        })
+    }
+}
+
+/// Persist an already sanitized window title through the baseline host path.
+/// Manager resolution intentionally precedes active-session lookup, matching
+/// the original `/title` error precedence for both set and clear operations.
+fn persist_window_title(app: &mut App, title: Option<String>) -> Result<(), String> {
+    let manager = match crate::session_manager::SessionManager::default_location() {
+        Ok(manager) => manager,
+        Err(error) => return Err(format!("Could not open sessions directory: {error}")),
+    };
+    let session_id = match &app.current_session_id {
+        Some(id) => id.clone(),
+        None => {
+            return Err("No active session. Send a message first to start a session.".to_string());
+        }
+    };
+    let mut session = match manager.load_session(&session_id) {
+        Ok(session) => session,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match live_session_before_first_snapshot(&manager, &session_id, app) {
+                Some(session) => session,
+                None => return Err(format!("Could not load session: {error}")),
+            }
+        }
+        Err(error) => return Err(format!("Could not load session: {error}")),
+    };
+    session = crate::session_manager::update_session(
+        session,
+        &app.api_messages,
+        u64::from(app.session.total_tokens),
+        app.system_prompt.as_ref(),
+    );
+    session.work_state = match app.work_state_snapshot() {
+        Ok(state) => state,
+        Err(error) => {
+            return Err(format!(
+                "Could not snapshot Work state before setting title: {error}"
+            ));
+        }
+    };
+    session.context_references = app.session_context_references.clone();
+    session.artifacts = app.session_artifacts.clone();
+    session.last_auto_route = app.auto_route_for_persistence();
+    session.metadata.model = app.model_selection_for_persistence();
+    session
+        .metadata
+        .set_model_provider_route(app.api_provider.as_str(), app.provider_id_for_persistence());
+    session.metadata.workspace.clone_from(&app.workspace);
+    session.metadata.mode = Some(app.mode.as_setting().to_string());
+    app.sync_cost_to_metadata(&mut session.metadata);
+    session.window_title.clone_from(&title);
+
+    match manager.save_session(&session) {
+        Ok(_) => {
+            app.window_title = title;
+            // The render loop syncs the resolved prefix into the terminal
+            // title; force a frame so the change lands immediately.
+            app.needs_redraw = true;
+            if let Err(error) = app.publish_pending_work_state() {
+                return Err(format!(
+                    "Window title saved, but Work views were not published: {error}"
+                ));
+            }
+            Ok(())
+        }
+        Err(error) => Err(format!("Could not save session: {error}")),
+    }
+}
+
+/// Map one synchronous browser-launch attempt to its portable outcome.
+/// Split out so the delegate's success/failure branches are unit-provable
+/// without spawning a real browser (utils tests cover the launcher itself).
+fn map_browser_open_result(url: String, launched: bool) -> RemoteOpenOutcome {
+    if launched {
+        RemoteOpenOutcome::Opened { url }
+    } else {
+        RemoteOpenOutcome::LaunchFailed { url }
+    }
+}
+
+fn plan_snapshot_to_sections(snapshot: &crate::tools::plan::PlanSnapshot) -> PlanSections {
+    PlanSections {
+        title: snapshot.title.clone(),
+        objective: snapshot.objective.clone(),
+        context_summary: snapshot.context_summary.clone(),
+        explanation: snapshot.explanation.clone(),
+        sources_used: snapshot.sources_used.clone(),
+        critical_files: snapshot.critical_files.clone(),
+        constraints: snapshot.constraints.clone(),
+        recommended_approach: snapshot.recommended_approach.clone(),
+        verification_plan: snapshot.verification_plan.clone(),
+        risks_and_unknowns: snapshot.risks_and_unknowns.clone(),
+        handoff_packet: snapshot.handoff_packet.clone(),
+        items: snapshot
+            .items
+            .iter()
+            .map(|item| PlanStep {
+                status: match &item.status {
+                    crate::tools::plan::StepStatus::Pending => PlanStepStatus::Pending,
+                    crate::tools::plan::StepStatus::InProgress => PlanStepStatus::InProgress,
+                    crate::tools::plan::StepStatus::Completed => PlanStepStatus::Completed,
+                },
+                text: item.step.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// Recover the session document for a live turn that has not completed (and
+/// therefore persisted) its first snapshot yet (#5430). Mirrors the legacy
+/// `/rename`/`/title` recovery exactly.
+fn live_session_before_first_snapshot(
+    manager: &crate::session_manager::SessionManager,
+    session_id: &str,
+    app: &App,
+) -> Option<crate::session_manager::SavedSession> {
+    if let Ok(Some(checkpoint)) = manager.load_session_checkpoint(session_id) {
+        return Some(checkpoint);
+    }
+    Some(
+        crate::session_manager::create_saved_session_with_id_and_mode(
+            session_id.to_string(),
+            &app.api_messages,
+            &app.model_selection_for_persistence(),
+            &app.workspace,
+            u64::from(app.session.total_tokens),
+            app.system_prompt.as_ref(),
+            Some(app.mode.as_setting()),
+        ),
+    )
+}
+
+/// `/resume <file>` import: read, parse a container or plain saved session,
+/// and apply it atomically. Errors are the exact baseline text.
+fn import_foreign_file(app: &mut App, path: &Path) -> Result<ResumeImportReceipt, String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(format!(
+                "failed to read import file {}: {e}",
+                path.display()
+            ));
+        }
+    };
+    if let Ok(container) = crate::session_tree::SessionImportContainer::from_json(&content) {
+        return import_session_container(app, container);
+    }
+    if let Ok(foreign) = serde_json::from_str::<crate::session_manager::SavedSession>(&content) {
+        let container = foreign.export_container("foreign");
+        return import_session_container(app, container);
+    }
+    Err(format!(
+        "File {} is not a recognized session export",
+        path.display()
+    ))
+}
+
+/// Apply a parsed foreign container: persist, mutate the active session,
+/// select it in a fresh picker, and return the portable receipt.
+fn import_session_container(
+    app: &mut App,
+    container: crate::session_tree::SessionImportContainer,
+) -> Result<ResumeImportReceipt, String> {
+    let manager = match crate::session_manager::SessionManager::default_location() {
+        Ok(m) => m,
+        Err(e) => return Err(format!("could not open sessions directory: {e}")),
+    };
+    let model = app.model.clone();
+    let workspace = app.workspace.clone();
+    let imported =
+        match crate::session_manager::SavedSession::import_foreign(container, workspace, model) {
+            Ok(s) => s,
+            Err(e) => return Err(format!("foreign import failed: {e}")),
+        };
+    let new_id = imported.metadata.id.clone();
+    if let Err(e) = manager.save_session(&imported) {
+        return Err(format!("imported session could not be saved: {e}"));
+    }
+    app.current_session_id = Some(new_id.clone());
+    app.current_session_metadata = Some(imported.metadata.clone());
+    app.api_messages = imported.messages.clone();
+    let picker = crate::tui::session_picker::SessionPickerView::new_selecting(
+        &app.workspace,
+        app.ui_locale,
+        &new_id,
+    );
+    app.view_stack.push(picker);
+    Ok(ResumeImportReceipt {
+        truncated_id: crate::session_manager::truncate_id(&new_id).to_string(),
+        entry_count: imported
+            .journal
+            .as_ref()
+            .map(|journal| journal.entries.len())
+            .unwrap_or(0),
+        leaf_display: imported.leaf_id.as_deref().unwrap_or("(none)").to_string(),
+    })
+}
+
 /// Session identity, messages, queue operations, and token totals.
 pub(crate) struct SessionAdapter<'a> {
     host: SharedCommandHost<'a>,
@@ -1078,6 +1719,7 @@ impl CommandPresentationContext for PresentationAdapter<'_> {
         let Some(message_id) = key_to_utility_message_id(key)
             .or_else(|| key_to_project_message_id(key))
             .or_else(|| key_to_plugin_message_id(key))
+            .or_else(|| key_to_session_message_id(key))
         else {
             return Err("unknown translation key".to_string());
         };
@@ -1086,6 +1728,20 @@ impl CommandPresentationContext for PresentationAdapter<'_> {
         apply_named_replacements(&template, replacements)
             .ok_or_else(|| "invalid translation replacement contract".to_string())
     }
+}
+
+/// Resolve a stable session-control message key to the current catalog id
+/// (FEAT-024 D6). Only `/remote-env` makes runtime catalog calls; the other
+/// five control commands keep their metadata-only `description_key` usage.
+pub(crate) fn key_to_session_message_id(key: &str) -> Option<MessageId> {
+    Some(match key {
+        "cmd_remote_env_overview" => MessageId::CmdRemoteEnvOverview,
+        "cmd_remote_env_opening" => MessageId::CmdRemoteEnvOpening,
+        "cmd_remote_env_unavailable" => MessageId::CmdRemoteEnvUnavailable,
+        "cmd_remote_env_source_custody_policy" => MessageId::CmdRemoteEnvSourceCustodyPolicy,
+        "cmd_remote_env_browser_label" => MessageId::CmdRemoteEnvBrowserLabel,
+        _ => return None,
+    })
 }
 
 /// Resolve a stable plugin message key to the current catalog id (FEAT-020 D5).
@@ -3254,7 +3910,7 @@ fn default_codewhale_tools_dir() -> Option<PathBuf> {
 // Envelope construction (D1)
 // ---------------------------------------------------------------------------
 
-/// Owns thirteen facet objects sharing one synchronous TUI host proxy.
+/// Owns fifteen facet objects sharing one synchronous TUI host proxy.
 ///
 /// Handlers borrow only these adapters. Every method delegates to the real App
 /// authority and releases its `RefCell` borrow before returning, so facets can
@@ -3274,6 +3930,7 @@ pub(crate) struct CommandContextBundle<'a> {
     skill_group: SkillGroupAdapter<'a>,
     plugin: PluginAdapter<'a>,
     lifecycle: SessionLifecycleAdapter<'a>,
+    control: SessionControlAdapter<'a>,
 }
 
 impl<'a> CommandContextBundle<'a> {
@@ -3322,6 +3979,9 @@ impl<'a> CommandContextBundle<'a> {
         if capabilities.contains(CommandCapabilities::SESSION_LIFECYCLE) {
             contexts = contexts.with_lifecycle(&mut self.lifecycle);
         }
+        if capabilities.contains(CommandCapabilities::SESSION_CONTROL) {
+            contexts = contexts.with_control(&mut self.control);
+        }
         contexts
     }
 
@@ -3341,7 +4001,8 @@ impl<'a> CommandContextBundle<'a> {
             .union(CommandCapabilities::PROJECT)
             .union(CommandCapabilities::SKILL_GROUP)
             .union(CommandCapabilities::PLUGIN)
-            .union(CommandCapabilities::SESSION_LIFECYCLE);
+            .union(CommandCapabilities::SESSION_LIFECYCLE)
+            .union(CommandCapabilities::SESSION_CONTROL);
         self.contexts(all_test_capabilities).into_parts()
     }
 }
@@ -3367,7 +4028,8 @@ impl App {
             memory: MemoryAdapter { host: host.clone() },
             skill_group: SkillGroupAdapter { host: host.clone() },
             plugin: PluginAdapter { host: host.clone() },
-            lifecycle: SessionLifecycleAdapter { host },
+            lifecycle: SessionLifecycleAdapter { host: host.clone() },
+            control: SessionControlAdapter { host },
         }
     }
 }
@@ -4329,11 +4991,43 @@ mod tests {
         assert!(parts.skill_group.is_none());
         assert!(parts.plugin.is_none());
 
-        // Unrelated capability: memory and lifecycle both absent.
+        // Control-only: control present and every unrelated slot absent.
+        let parts = bundle
+            .contexts(CommandCapabilities::SESSION_CONTROL)
+            .into_parts();
+        assert!(parts.control.is_some());
+        assert!(parts.session.is_none());
+        assert!(parts.model.is_none());
+        assert!(parts.cost.is_none());
+        assert!(parts.mode_policy.is_none());
+        assert!(parts.system_prompt.is_none());
+        assert!(parts.skills.is_none());
+        assert!(parts.workspace.is_none());
+        assert!(parts.presentation.is_none());
+        assert!(parts.media.is_none());
+        assert!(parts.memory.is_none());
+        assert!(parts.project.is_none());
+        assert!(parts.skill_group.is_none());
+        assert!(parts.plugin.is_none());
+        assert!(parts.lifecycle.is_none());
+
+        // `/remote-env`: exactly control plus presentation.
+        let parts = bundle
+            .contexts(CommandCapabilities::SESSION_CONTROL.union(CommandCapabilities::PRESENTATION))
+            .into_parts();
+        assert!(parts.control.is_some());
+        assert!(parts.presentation.is_some());
+        assert!(parts.session.is_none());
+        assert!(parts.workspace.is_none());
+        assert!(parts.lifecycle.is_none());
+        assert!(parts.plugin.is_none());
+
+        // Unrelated capability: memory, lifecycle, and control all absent.
         let parts = bundle.contexts(CommandCapabilities::SESSION).into_parts();
         assert!(parts.session.is_some());
         assert!(parts.memory.is_none());
         assert!(parts.lifecycle.is_none());
+        assert!(parts.control.is_none());
     }
 
     // ─── FEAT-022 skill-group adapter tests ───────────────────────────────────
@@ -5248,5 +5942,551 @@ mod tests {
                 other => panic!("expected Journal projection, got {other:?}"),
             }
         }
+    }
+
+    // -------------------------------------------------------------------
+    // FEAT-024 Phase 3: SessionControlAdapter tests (Tasks 3.2/3.4/3.6).
+    // The bundle borrows `App` for its whole life, so each test scopes the
+    // facet (via a bound `parts` value) and re-reads `App` only after
+    // dropping it.
+    // -------------------------------------------------------------------
+
+    fn control_test_app(tmpdir: &TempDir) -> App {
+        lifecycle_test_app(tmpdir)
+    }
+
+    fn control_home_guard(tmpdir: &TempDir) -> crate::test_support::EnvVarGuard {
+        lifecycle_home_guard(tmpdir)
+    }
+
+    fn save_control_session(tmpdir: &TempDir, id: &str) {
+        let manager = crate::session_manager::SessionManager::default_location().unwrap();
+        let mut session = crate::session_manager::create_saved_session_with_mode(
+            &[],
+            "deepseek-v4-pro",
+            tmpdir.path(),
+            0,
+            None,
+            None,
+        );
+        session.metadata.id = id.to_string();
+        session.metadata.title = "Control Session".to_string();
+        manager.save_session(&session).unwrap();
+    }
+
+    #[test]
+    fn control_relay_projection_maps_authoritative_snapshot() {
+        let tmpdir = TempDir::new().unwrap();
+        let _lock = crate::test_support::lock_test_env();
+        let mut app = control_test_app(&tmpdir);
+        app.goal.objective = Some("ship the control slice".to_string());
+        app.goal.token_budget = Some(42_000);
+        let expected_workspace = app.workspace.display().to_string();
+        let expected_mode = app.mode.label().to_string();
+        let expected_model = app.model_display_label();
+
+        {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            let projection = facet.relay_projection();
+            assert_eq!(projection.workspace, expected_workspace);
+            assert_eq!(projection.mode, expected_mode);
+            assert_eq!(projection.model, expected_model);
+            assert_eq!(
+                projection.goal_objective.as_deref(),
+                Some("ship the control slice")
+            );
+            assert_eq!(projection.goal_token_budget, Some(42_000));
+            assert_eq!(
+                projection.compact_template.trim(),
+                crate::prompts::COMPACT_TEMPLATE.trim()
+            );
+            assert!(matches!(projection.todos, TodoProjection::Absent));
+            assert!(matches!(projection.plan, PlanProjection::Absent));
+        }
+
+        // Plan state held by another owner -> busy state is represented,
+        // never a panic or lock wait.
+        {
+            let plan_state = app.plan_state.clone();
+            let guard = plan_state.try_lock().unwrap();
+            {
+                let mut bundle = app.command_contexts();
+                let mut parts = bundle.parts();
+                let facet = parts.control.as_deref_mut().expect("control slot");
+                assert!(matches!(
+                    facet.relay_projection().plan,
+                    PlanProjection::Busy
+                ));
+            }
+            drop(guard);
+        }
+
+        // Seeded plan sections transport the status label mapping.
+        {
+            let plan_state = app.plan_state.clone();
+            let mut plan = plan_state.try_lock().unwrap();
+            plan.update(crate::tools::plan::UpdatePlanArgs {
+                title: Some("Relay Plan".to_string()),
+                plan: vec![crate::tools::plan::PlanItemArg {
+                    step: "port the control slice".to_string(),
+                    status: crate::tools::plan::StepStatus::InProgress,
+                }],
+                ..crate::tools::plan::UpdatePlanArgs::default()
+            });
+        }
+        {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            match facet.relay_projection().plan {
+                PlanProjection::Sections(sections) => {
+                    assert_eq!(sections.title.as_deref(), Some("Relay Plan"));
+                    assert_eq!(sections.items.len(), 1);
+                    assert_eq!(sections.items[0].status, PlanStepStatus::InProgress);
+                    assert_eq!(sections.items[0].text, "port the control slice");
+                }
+                other => panic!("expected Sections plan after update, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn control_hosted_work_target_resolves_and_never_echoes_credentials() {
+        let tmpdir = TempDir::new().unwrap();
+        let _lock = crate::test_support::lock_test_env();
+        let secret = "top-secret-token";
+        let mut app = control_test_app(&tmpdir);
+        init_control_git_repo(
+            tmpdir.path(),
+            &format!("https://hunter:{secret}@github.com/Hmbown/CodeWhale.git"),
+            "main",
+        );
+
+        {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            let target = facet.resolve_hosted_work_target().expect("target");
+            assert_eq!(target.repo, "Hmbown/CodeWhale");
+            assert_eq!(target.branch, "main");
+            assert_eq!(
+                target.url,
+                "https://app.codewhale.net/work?repo=Hmbown%2FCodeWhale&branch=main"
+            );
+            assert!(!target.url.contains(secret));
+            assert!(!target.repo.contains(secret));
+        }
+
+        // Unsupported host resolves to None.
+        init_control_git_repo(tmpdir.path(), "git@gitlab.com:acme/widgets.git", "main");
+        {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            assert_eq!(facet.resolve_hosted_work_target(), None);
+        }
+    }
+
+    fn init_control_git_repo(dir: &Path, origin: &str, branch: &str) {
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(dir)
+            .status()
+            .expect("run git init");
+        assert!(init.success());
+        let set_origin = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "--local", "remote.origin.url", origin])
+            .status()
+            .expect("set origin");
+        assert!(set_origin.success());
+        let set_branch = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["symbolic-ref", "HEAD"])
+            .arg(format!("refs/heads/{branch}"))
+            .status()
+            .expect("set branch");
+        assert!(set_branch.success());
+    }
+
+    #[test]
+    fn control_rename_session_persists_title_and_preserves_order() {
+        let tmpdir = TempDir::new().unwrap();
+        let _lock = crate::test_support::lock_test_env();
+        let _home = control_home_guard(&tmpdir);
+        save_control_session(&tmpdir, "rename-1");
+        let mut app = control_test_app(&tmpdir);
+        app.current_session_id = Some("rename-1".to_string());
+
+        let receipt = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet.rename_session("Brand New Title").expect("rename ok")
+        };
+        assert_eq!(receipt.title, "Brand New Title");
+        assert_eq!(app.session_title.as_deref(), Some("Brand New Title"));
+        let manager = crate::session_manager::SessionManager::default_location().unwrap();
+        let reloaded = manager.load_session("rename-1").unwrap();
+        assert_eq!(reloaded.metadata.title, "Brand New Title");
+
+        // The facet exposes the authoritative sanitizer while the portable
+        // handler owns empty and length policy.
+        let sanitized = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet.sanitize_session_title("\u{1b}\u{7}\u{200b}")
+        };
+        assert!(sanitized.is_empty());
+        assert_eq!(app.window_title, None);
+    }
+
+    #[test]
+    fn control_rename_recovers_first_snapshot_from_checkpoint() {
+        let tmpdir = TempDir::new().unwrap();
+        let _lock = crate::test_support::lock_test_env();
+        let _home = control_home_guard(&tmpdir);
+        let manager = crate::session_manager::SessionManager::default_location().unwrap();
+        let mut checkpoint = crate::session_manager::create_saved_session_with_mode(
+            &[],
+            "deepseek-v4-pro",
+            tmpdir.path(),
+            0,
+            None,
+            None,
+        );
+        checkpoint.metadata.id = "midturn-1".to_string();
+        manager.save_checkpoint(&checkpoint).unwrap();
+
+        let mut app = control_test_app(&tmpdir);
+        app.current_session_id = Some("midturn-1".to_string());
+        app.api_messages = vec![user_message("first turn still streaming")];
+
+        let receipt = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet.rename_session("Midturn Rename").expect("rename ok")
+        };
+        assert_eq!(receipt.title, "Midturn Rename");
+        assert_eq!(app.session_title.as_deref(), Some("Midturn Rename"));
+        let persisted = manager.load_session("midturn-1").unwrap();
+        assert_eq!(persisted.metadata.title, "Midturn Rename");
+        assert_eq!(persisted.messages.len(), 1);
+    }
+
+    #[test]
+    fn control_rename_errors_match_the_baseline() {
+        let tmpdir = TempDir::new().unwrap();
+        let _lock = crate::test_support::lock_test_env();
+        let _home = control_home_guard(&tmpdir);
+        let mut app = control_test_app(&tmpdir);
+        app.current_session_id = None;
+        let err = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet.rename_session("Anything").unwrap_err()
+        };
+        assert!(err.contains("No active session"));
+    }
+
+    #[test]
+    fn control_title_report_set_and_clear_preserve_semantics() {
+        let tmpdir = TempDir::new().unwrap();
+        let _lock = crate::test_support::lock_test_env();
+        let _home = control_home_guard(&tmpdir);
+        save_control_session(&tmpdir, "title-1");
+        let mut app = control_test_app(&tmpdir);
+        app.current_session_id = Some("title-1".to_string());
+
+        // No session window title and no config default -> unset, no source.
+        let report = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet.title_report()
+        };
+        assert_eq!(report.effective, "unset");
+        assert!(matches!(report.source, TitleSource::None));
+
+        // Set a window title: session name untouched, redraw requested.
+        {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet
+                .set_window_title("parallel-task".to_string())
+                .expect("set ok");
+        }
+        assert_eq!(app.window_title.as_deref(), Some("parallel-task"));
+        assert!(app.needs_redraw);
+        assert_eq!(
+            app.session_title, None,
+            "/title never changes the session name"
+        );
+        let manager = crate::session_manager::SessionManager::default_location().unwrap();
+        let reloaded = manager.load_session("title-1").unwrap();
+        assert_eq!(reloaded.window_title.as_deref(), Some("parallel-task"));
+        assert_eq!(reloaded.metadata.title, "Control Session");
+
+        // Control-char-only input is normalized to empty before the portable
+        // handler applies its exact user-facing validation message.
+        let sanitized = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet.sanitize_session_title("\u{1b}\u{7}\u{200b}")
+        };
+        assert!(sanitized.is_empty());
+
+        // Clear removes the session-level title.
+        {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet.clear_window_title().expect("clear ok");
+        }
+        assert_eq!(app.window_title, None);
+    }
+
+    #[test]
+    fn control_resume_gate_picker_and_resolution_routes() {
+        let tmpdir = TempDir::new().unwrap();
+        let _lock = crate::test_support::lock_test_env();
+        let _home = control_home_guard(&tmpdir);
+        save_control_session(&tmpdir, "resume-target-1");
+        let mut app = control_test_app(&tmpdir);
+
+        // Transition gate mirrors the host state.
+        app.is_loading = true;
+        {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            assert!(facet.transition_blocked());
+        }
+        app.is_loading = false;
+
+        // Bare resume pushes the picker.
+        assert!(app.view_stack.is_empty());
+        {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet.open_resume_picker();
+        }
+        assert!(!app.view_stack.is_empty());
+
+        // Full id and prefix resolve to the durable session file.
+        let by_id = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet
+                .resolve_resume_source("resume-target-1")
+                .expect("resolve ok")
+        };
+        match by_id {
+            ResumeSource::Session {
+                load_path,
+                truncated_id,
+                title,
+            } => {
+                assert!(load_path.as_ref().is_some_and(|p| p.exists()));
+                assert!(!truncated_id.is_empty());
+                assert_eq!(title, "Control Session");
+            }
+            other => panic!("expected Session resolution, got {other:?}"),
+        }
+        let by_prefix = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet
+                .resolve_resume_source("resume-target")
+                .expect("prefix ok")
+        };
+        assert!(matches!(by_prefix, ResumeSource::Session { .. }));
+
+        // A readable file resolves as the direct-file route.
+        let export_file = tmpdir.path().join("session-export.json");
+        std::fs::write(&export_file, "{}").unwrap();
+        let as_file = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet
+                .resolve_resume_source(&export_file.display().to_string())
+                .expect("file ok")
+        };
+        assert!(matches!(as_file, ResumeSource::File(_)));
+
+        // Unknown input resolves to NotFound with the raw value for the
+        // handler's exact fallback message.
+        let missing = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet
+                .resolve_resume_source("not-a-real-session-xyz")
+                .expect("notfound ok")
+        };
+        match missing {
+            ResumeSource::NotFound { raw, error } => {
+                assert_eq!(raw, "not-a-real-session-xyz");
+                assert!(!error.is_empty());
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn control_resume_import_rejects_unrecognized_and_applies_foreign() {
+        let tmpdir = TempDir::new().unwrap();
+        let _lock = crate::test_support::lock_test_env();
+        let _home = control_home_guard(&tmpdir);
+        let mut app = control_test_app(&tmpdir);
+
+        let bad_file = tmpdir.path().join("not-an-export.json");
+        std::fs::write(&bad_file, "not session json at all").unwrap();
+        let err = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet.import_session_file(bad_file).unwrap_err()
+        };
+        assert!(err.contains("is not a recognized session export"), "{err}");
+
+        // A real export container round-trips through import and mutates the
+        // active session atomically.
+        let manager = crate::session_manager::SessionManager::default_location().unwrap();
+        let mut source = crate::session_manager::create_saved_session_with_mode(
+            &[],
+            "deepseek-v4-pro",
+            tmpdir.path(),
+            0,
+            None,
+            None,
+        );
+        source.metadata.id = "foreign-source".to_string();
+        source.metadata.title = "Foreign Name".to_string();
+        let container = source.export_container("foreign");
+        let json = serde_json::to_string(&container).expect("serialize container");
+        let import_file = tmpdir.path().join("foreign-export.json");
+        std::fs::write(&import_file, &json).unwrap();
+
+        let receipt = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet.import_session_file(import_file).expect("import ok")
+        };
+        assert!(!receipt.truncated_id.is_empty());
+        assert_eq!(receipt.entry_count, 0);
+        assert_eq!(receipt.leaf_display, "(none)");
+        let imported_id = app.current_session_id.clone().expect("active session");
+        let saved = manager
+            .load_session(&imported_id)
+            .expect("import persisted");
+        // Host import_foreign rebuilds the document with default metadata
+        // (fresh id/title), matching the baseline import path exactly.
+        assert_eq!(saved.metadata.title, "New Session");
+        assert_ne!(saved.metadata.id, "foreign-source");
+        assert!(
+            manager
+                .sessions_dir()
+                .join(format!("{imported_id}.json"))
+                .exists()
+        );
+    }
+
+    #[test]
+    fn control_remote_state_and_routing_are_deterministic() {
+        let tmpdir = TempDir::new().unwrap();
+        let _lock = crate::test_support::lock_test_env();
+        let mut app = control_test_app(&tmpdir);
+
+        // Off state: status line, no link, no browser open.
+        {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            assert_eq!(facet.remote_status(), "Remote control: off");
+            assert_eq!(facet.remote_link(), None);
+            assert!(matches!(
+                facet.remote_browser_open(),
+                RemoteOpenOutcome::NoLink
+            ));
+            assert_eq!(facet.remote_stop_refusal(), None);
+        }
+
+        // Start wording distinguishes the active-turn copy.
+        app.is_loading = true;
+        {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            assert!(facet.remote_start_info().connecting);
+        }
+        app.is_loading = false;
+        {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            assert!(!facet.remote_start_info().connecting);
+        }
+
+        // A live advertised link composes without spawning a browser.
+        app.remote_control.install_live_link_for_test(
+            "https://app.codewhale.net/session?run=run-1",
+            Some("https://app.codewhale.net/settings"),
+        );
+        let link = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet.remote_link().expect("live link")
+        };
+        assert_eq!(link.url, "https://app.codewhale.net/session?run=run-1");
+        assert_eq!(
+            link.computer_url.as_deref(),
+            Some("https://app.codewhale.net/settings")
+        );
+    }
+
+    #[test]
+    fn control_remote_stop_refusal_guards_active_turns() {
+        let tmpdir = TempDir::new().unwrap();
+        let _lock = crate::test_support::lock_test_env();
+        let mut app = control_test_app(&tmpdir);
+        app.remote_control
+            .activate_prompt("run-1", "turn-1")
+            .unwrap();
+        let refusal = {
+            let mut bundle = app.command_contexts();
+            let mut parts = bundle.parts();
+            let facet = parts.control.as_deref_mut().expect("control slot");
+            facet.remote_stop_refusal().expect("refusal present")
+        };
+        assert!(refusal.contains("active remote turn"), "{refusal}");
+    }
+
+    #[test]
+    fn control_browser_open_outcome_mapping_is_exact() {
+        let url = "https://app.codewhale.net/session?run=run-9".to_string();
+        assert!(matches!(
+            map_browser_open_result(url.clone(), true),
+            RemoteOpenOutcome::Opened { url: u } if u == url
+        ));
+        assert!(matches!(
+            map_browser_open_result(url.clone(), false),
+            RemoteOpenOutcome::LaunchFailed { url: u } if u == url
+        ));
     }
 }

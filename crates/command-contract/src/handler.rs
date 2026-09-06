@@ -7,8 +7,9 @@
 use crate::facets::{
     CommandCostContext, CommandMediaContext, CommandMemoryContext, CommandModePolicyContext,
     CommandModelContext, CommandPluginContext, CommandPresentationContext, CommandProjectContext,
-    CommandSessionContext, CommandSessionLifecycleContext, CommandSkillGroupContext,
-    CommandSkillsContext, CommandSystemPromptContext, CommandWorkspaceContext,
+    CommandSessionContext, CommandSessionControlContext, CommandSessionLifecycleContext,
+    CommandSkillGroupContext, CommandSkillsContext, CommandSystemPromptContext,
+    CommandWorkspaceContext,
 };
 
 /// Exact host capabilities exposed to one contextual command handler.
@@ -43,6 +44,13 @@ impl CommandCapabilities {
     /// commands; `/compact` and `/purge` remain pure. Never widened by the
     /// basic session capability.
     pub const SESSION_LIFECYCLE: Self = Self(1 << 13);
+    /// Session-control host data (FEAT-024 D3), the next non-conflicting bit
+    /// after `SESSION_LIFECYCLE`. Required only by the six host-dependent
+    /// control commands (`/relay`, `/rename`, `/resume`, `/rc`, `/remote-env`,
+    /// `/title`); `/remote-env` also declares `PRESENTATION`. The backing
+    /// storage remains `u16` per the resolved maintainer review on FEAT-023 PR
+    /// #5902 — bit 14 is available, so no speculative widening is performed.
+    pub const SESSION_CONTROL: Self = Self(1 << 14);
 
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -91,6 +99,7 @@ pub struct CommandContexts<'a> {
     skill_group: Option<&'a mut dyn CommandSkillGroupContext>,
     plugin: Option<&'a mut dyn CommandPluginContext>,
     lifecycle: Option<&'a mut dyn CommandSessionLifecycleContext>,
+    control: Option<&'a mut dyn CommandSessionControlContext>,
 }
 
 /// Consumed envelope used when one handler needs several independent facets.
@@ -109,6 +118,7 @@ pub struct ContextParts<'a> {
     pub skill_group: Option<&'a mut dyn CommandSkillGroupContext>,
     pub plugin: Option<&'a mut dyn CommandPluginContext>,
     pub lifecycle: Option<&'a mut dyn CommandSessionLifecycleContext>,
+    pub control: Option<&'a mut dyn CommandSessionControlContext>,
 }
 
 impl<'a> CommandContexts<'a> {
@@ -128,6 +138,7 @@ impl<'a> CommandContexts<'a> {
             skill_group: None,
             plugin: None,
             lifecycle: None,
+            control: None,
         }
     }
 
@@ -147,6 +158,7 @@ impl<'a> CommandContexts<'a> {
             skill_group: self.skill_group,
             plugin: self.plugin,
             lifecycle: self.lifecycle,
+            control: self.control,
         }
     }
 
@@ -255,6 +267,14 @@ impl<'a> CommandContexts<'a> {
         assert!(
             self.lifecycle.replace(value).is_none(),
             "lifecycle facet already set"
+        );
+        self
+    }
+
+    pub fn with_control(mut self, value: &'a mut dyn CommandSessionControlContext) -> Self {
+        assert!(
+            self.control.replace(value).is_none(),
+            "control facet already set"
         );
         self
     }

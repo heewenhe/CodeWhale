@@ -17570,9 +17570,10 @@ fn automatic_session_snapshot_never_reloads_existing_json_on_ui_thread() {
 
 #[test]
 fn renamed_title_survives_next_in_memory_automatic_snapshot() {
+    let _lock = crate::test_support::lock_test_env();
     let tmp = tempfile::tempdir().expect("tempdir");
-    let manager =
-        crate::session_manager::SessionManager::new(tmp.path().join("sessions")).expect("manager");
+    let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
+    let manager = crate::session_manager::SessionManager::default_location().expect("manager");
     let mut session = saved_session_with_messages(vec![text_message("user", "original title")]);
     session.metadata.title = "Original Title".to_string();
     manager.save_session(&session).expect("save session");
@@ -17580,12 +17581,7 @@ fn renamed_title_survives_next_in_memory_automatic_snapshot() {
     app.current_session_id = Some(session.metadata.id.clone());
     app.api_messages.clone_from(&session.messages);
 
-    let renamed = crate::commands::rename_session_with_manager(
-        "Renamed In Memory",
-        &session.metadata.id,
-        &manager,
-        &mut app,
-    );
+    let renamed = crate::commands::execute("/rename Renamed In Memory", &mut app);
     assert!(!renamed.is_error, "{:?}", renamed.message);
     let snapshot = build_session_snapshot(&mut app, &manager).expect("automatic snapshot");
 

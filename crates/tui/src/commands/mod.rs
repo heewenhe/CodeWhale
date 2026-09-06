@@ -26,6 +26,8 @@ mod epic_discovery_acceptance;
 #[cfg(all(test, feature = "long-running-tests"))]
 mod session_acceptance;
 #[cfg(test)]
+mod session_control_regression_tests;
+#[cfg(test)]
 mod session_lifecycle_regression_tests;
 
 use std::sync::OnceLock;
@@ -37,8 +39,6 @@ pub use traits::CommandInfo;
 /// against the live `Config`.
 pub(crate) use groups::core::fleet::{fleet_catalog_rejection, fleet_provider_rejection};
 pub use groups::project::share;
-#[cfg(test)]
-pub(crate) use groups::session::rename_with_manager as rename_session_with_manager;
 
 // Voice capture plumbing shared with the hotbar and the UI event loop.
 pub use groups::core::voice;
@@ -2069,6 +2069,13 @@ mod tests {
             "save",
             "sessions",
             "tree",
+            // FEAT-024 session control slice.
+            "relay",
+            "rename",
+            "resume",
+            "rc",
+            "remote-env",
+            "title",
         ];
         for info in command_infos() {
             if info.name == "feat015ctx" || MIGRATED_GROUPS.contains(&info.name) {
@@ -2746,11 +2753,62 @@ mod tests {
                 "/{name} must be pure (no host context bundle)"
             );
         }
-        // Out-of-scope session commands remain legacy for FEAT-024/025/026.
-        for name in ["export", "relay", "structcopy"] {
+        // Out-of-scope session commands remain legacy for FEAT-025/026.
+        for name in ["export", "structcopy"] {
             assert!(
                 !registry().has_contextual_handler(name),
                 "/{name} must stay on the legacy dispatch until its owning FEAT"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // FEAT-024: session control entries register through the portable bridge
+    // (D3/D6) — five declare SESSION_CONTROL only; `/remote-env` declares
+    // control plus presentation; export/structcopy remain legacy.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn feat024_control_entries_register_through_portable_bridge() {
+        use codewhale_command_contract::handler::{CommandCapabilities, CommandHandler};
+
+        for name in ["relay", "rename", "resume", "rc", "title"] {
+            assert!(
+                registry().has_contextual_handler(name),
+                "/{name} must register through the portable bridge"
+            );
+            let handler = registry()
+                .get(name)
+                .expect("entry")
+                .contextual_handler()
+                .expect("contextual handler");
+            let CommandHandler::Contextual { capabilities, .. } = handler else {
+                panic!("/{name} must be contextual");
+            };
+            assert_eq!(
+                capabilities,
+                CommandCapabilities::SESSION_CONTROL,
+                "/{name} declares control authority only"
+            );
+        }
+        let handler = registry()
+            .get("remote-env")
+            .expect("entry")
+            .contextual_handler()
+            .expect("remote-env handler");
+        let CommandHandler::Contextual { capabilities, .. } = handler else {
+            panic!("/remote-env must be contextual");
+        };
+        assert_eq!(
+            capabilities,
+            CommandCapabilities::SESSION_CONTROL.union(CommandCapabilities::PRESENTATION),
+            "/remote-env declares control plus presentation only"
+        );
+        // FEAT-025/FEAT-026 leaves remain legacy until their owning FEATs.
+        for name in ["export", "structcopy"] {
+            assert!(
+                !registry().has_contextual_handler(name),
+                "/{name} must stay on the legacy dispatch"
             );
         }
     }
@@ -2806,5 +2864,63 @@ mod tests {
                 .starts_with("Usage: /branch <entry_id>"),
             "{branch_usage:?}"
         );
+    }
+
+    #[test]
+    fn feat024_control_commands_dispatch_through_public_seam() {
+        let mut app = create_test_app();
+        app.workspace = PathBuf::from(".");
+
+        // /relay composes through the control adapter and emits the bounded
+        // SendMessage action; only SESSION_CONTROL is exposed.
+        let relay = execute("/relay handoff notes", &mut app);
+        assert_eq!(
+            relay.message.as_deref(),
+            Some("Preparing session relay at .deepseek/handoff.md...")
+        );
+        let relay_message = match relay.action {
+            Some(AppAction::SendMessage(message)) => message,
+            other => panic!("expected SendMessage, got {other:?}"),
+        };
+        assert!(relay_message.contains("Create a compact session relay (接力)"));
+        assert!(relay_message.contains("- Requested relay focus: handoff notes"));
+
+        // /rc status reaches the remote-control service through the facet.
+        let rc = execute("/rc status", &mut app);
+        assert_eq!(rc.message.as_deref(), Some("Remote control: off"));
+
+        // /remote-env bare overview is localized through the presentation
+        // facet with the exact source-custody boundary copy.
+        let remote_env = execute("/remote-env", &mut app);
+        assert!(
+            remote_env
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Hosted Work starts a new environment"),
+            "{remote_env:?}"
+        );
+
+        // /rename and /title validation boundaries stay exact over the seam.
+        let rename = execute("/rename", &mut app);
+        assert_eq!(
+            rename.message.as_deref(),
+            Some("Error: Usage: /rename <new title>")
+        );
+        let title = execute("/title", &mut app);
+        assert!(
+            title
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Window title: [unset]"),
+            "{title:?}"
+        );
+
+        // Bare /resume opens the picker through the adapter.
+        let resume = execute("/resume", &mut app);
+        assert!(!resume.is_error);
+        assert!(resume.action.is_none());
+        assert!(resume.message.is_none());
     }
 }

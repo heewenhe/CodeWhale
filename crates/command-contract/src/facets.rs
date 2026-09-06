@@ -1108,3 +1108,263 @@ pub trait CommandSessionLifecycleContext {
     /// days while protecting the active session; returns the number pruned.
     fn prune_sessions(&mut self, days: u64) -> Result<usize, String>;
 }
+
+// ---------------------------------------------------------------------------
+// FEAT-024: session control slice (D2-D7).
+//
+// One independently optional session-control authority covering exactly the
+// host work the six control commands (`/relay`, `/rename`, `/resume`, `/rc`,
+// `/remote-env`, `/title`) consume. `CommandSessionContext` and
+// `CommandSessionLifecycleContext` are deliberately not widened: control
+// authority exists only on this facet, and every delegate is an atomic host
+// operation or a semantic projection so handlers keep byte-identical
+// composition. Portable values never expose TUI state beyond what the
+// baseline branches on.
+// ---------------------------------------------------------------------------
+
+/// `/relay` semantic snapshot (D4). The handler composes the byte-identical
+/// instruction from these deterministic fields; `crate::prompts`,
+/// `crate::todo_snapshot`, goal/todo/plan machinery, Work-state objects, and
+/// locks stay host-side.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RelayProjection {
+    /// Authoritative compact-template text (`COMPACT_TEMPLATE`), echoed with
+    /// a trailing trim by the handler exactly as today.
+    pub compact_template: String,
+    pub workspace: String,
+    pub mode: String,
+    pub model: String,
+    pub goal_objective: Option<String>,
+    pub goal_token_budget: Option<u32>,
+    pub todos: TodoProjection,
+    pub plan: PlanProjection,
+}
+
+/// To-do state distinction for the relay snapshot. The rendered body (if any)
+/// is produced host-side from the authoritative graph-backed snapshot seam.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TodoProjection {
+    /// Rendered to-do body lines.
+    Body(String),
+    /// Work state could not be read (`To-do: unavailable because the list is
+    /// busy.`).
+    Unavailable,
+    /// No Work state or no to-do body.
+    Absent,
+}
+
+/// Plan-state distinction for the relay snapshot. `Busy` reproduces the
+/// baseline `try_lock` failure branch; `Absent` reproduces an empty snapshot.
+///
+/// `PlanSections` is intentionally not boxed: the command-crate boundary gate
+/// forbids boxed storage in the contract, and the section payload is only ever
+/// built once per `/relay` dispatch.
+#[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
+pub enum PlanProjection {
+    Sections(PlanSections),
+    Busy,
+    Absent,
+}
+
+/// Semantic plan snapshot fields consumed by `/relay`. Values are the raw
+/// snapshot values; the handler applies the baseline trim/empty filtering and
+/// label composition so ordering and spacing stay byte-identical.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PlanSections {
+    pub title: Option<String>,
+    pub objective: Option<String>,
+    pub context_summary: Option<String>,
+    pub explanation: Option<String>,
+    pub sources_used: Vec<String>,
+    pub critical_files: Vec<String>,
+    pub constraints: Vec<String>,
+    pub recommended_approach: Option<String>,
+    pub verification_plan: Option<String>,
+    pub risks_and_unknowns: Option<String>,
+    pub handoff_packet: Option<String>,
+    pub items: Vec<PlanStep>,
+}
+
+/// Portable plan-step status. The adapter maps the TUI plan status onto this
+/// semantic enum; the command handler remains the sole owner of the exact
+/// `pending`/`in_progress`/`completed` labels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanStepStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+/// One semantic plan checklist item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanStep {
+    pub status: PlanStepStatus,
+    pub text: String,
+}
+
+/// `/resume` route resolution (D6). The host resolves argument shape and
+/// performs container imports atomically; the handler selects the exact
+/// baseline message/action per variant.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResumeSource {
+    /// Argument resolves to a readable file (`raw` direct path or
+    /// workspace-relative path); the handler calls `import_session_file`.
+    File(PathBuf),
+    /// Argument resolved through the session manager (id or prefix).
+    Session {
+        /// Durable session file when present; `None` reproduces the baseline
+        /// non-file fallback message arm.
+        load_path: Option<PathBuf>,
+        truncated_id: String,
+        title: String,
+    },
+    /// Argument parsed as a foreign session container, which was imported
+    /// atomically by the resolver.
+    Imported(ResumeImportReceipt),
+    /// Argument matched neither a file, a session, nor a container.
+    NotFound { raw: String, error: String },
+}
+
+/// Portable `/resume` import receipt. The handler renders
+/// `Imported foreign session as {truncated_id} ({entry_count} entries, leaf
+/// {leaf_display})`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResumeImportReceipt {
+    pub truncated_id: String,
+    pub entry_count: usize,
+    pub leaf_display: String,
+}
+
+/// `/rename` success receipt; the title is the sanitized persisted value so
+/// the handler echoes exactly what was written.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionTitleReceipt {
+    pub title: String,
+}
+
+/// Bare `/title` status projection (`Window title: [{effective}]{source}`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TitleReport {
+    /// Effective window-title prefix, or `unset`.
+    pub effective: String,
+    pub source: TitleSource,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TitleSource {
+    /// Session-level window title set.
+    Session,
+    /// Config-default title applies.
+    ConfigDefault,
+    /// Neither a session title nor a config default.
+    None,
+}
+
+/// `/rc link` structured link data.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteLink {
+    pub url: String,
+    pub computer_url: Option<String>,
+}
+
+/// `/rc open` outcome. Browser launch stays synchronous and single-attempt;
+/// no deferred external-URL action is produced (D6).
+#[derive(Clone, Debug, PartialEq)]
+pub enum RemoteOpenOutcome {
+    NoLink,
+    Opened { url: String },
+    LaunchFailed { url: String },
+}
+
+/// `/rc start` wording input: the active-turn copy is used while a turn is
+/// loading or a dispatch is in flight.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteStartInfo {
+    pub connecting: bool,
+}
+
+/// `/remote-env open` hosted-work target. The URL is fully encoded host-side
+/// (the portable handler must not depend on `urlencoding`); repo/branch echo
+/// the raw values used by the baseline message replacements.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HostedWorkTarget {
+    pub url: String,
+    pub repo: String,
+    pub branch: String,
+}
+
+/// Control authority for the session command slice (FEAT-024 D2/D5).
+///
+/// Operation-granular synchronous delegates over the exact minimum host work
+/// the six control commands consume. Delegates reproduce the baseline
+/// check/mutation order (transition gate before resume I/O, save before
+/// publication, single-attempt browser launch) and return portable receipts/
+/// projections or the exact host-error text the baseline surfaces. No
+/// `SessionManager`, saved-session/container type, `SessionPickerView`,
+/// remote-control service, Git wrapper, configuration, model/history type,
+/// lock, or host callback crosses the facet.
+pub trait CommandSessionControlContext {
+    /// Live transition gate consulted by `/resume` before any picker or I/O.
+    fn transition_blocked(&self) -> bool;
+
+    /// `/relay`: authoritative semantic snapshot (workspace/mode/model/goal/
+    /// to-do/plan/compact-template). Unavailable sources are represented as
+    /// explicit states, never panics.
+    fn relay_projection(&self) -> RelayProjection;
+
+    /// Bare `/resume`: push the existing picker without preselection.
+    fn open_resume_picker(&mut self);
+
+    /// `/resume <raw>`: resolve direct-path, workspace-relative, session
+    /// id/prefix, and inline-container routes in the established order; a
+    /// recognized inline container is imported atomically here.
+    fn resolve_resume_source(&mut self, raw: &str) -> Result<ResumeSource, String>;
+
+    /// `/resume <file>`: read, parse, persist, and apply a foreign session
+    /// file (container or plain saved session). Errors are the exact baseline
+    /// read/parse/import text.
+    fn import_session_file(&mut self, path: PathBuf) -> Result<ResumeImportReceipt, String>;
+
+    /// Apply the authoritative session-title character policy before the
+    /// portable `/rename` and `/title` handlers validate and compose output.
+    fn sanitize_session_title(&self, raw_title: &str) -> String;
+
+    /// `/rename <title>`: recover first-snapshot state, sync live state,
+    /// persist, and publish with baseline order. The handler already applied
+    /// sanitization plus blank and 100-character validation.
+    fn rename_session(&mut self, title: &str) -> Result<SessionTitleReceipt, String>;
+
+    /// Bare `/title`: effective prefix and its source.
+    fn title_report(&self) -> TitleReport;
+
+    /// `/title <title>`: persist an already sanitized and validated window
+    /// title with baseline save/publication/redraw semantics.
+    fn set_window_title(&mut self, title: String) -> Result<(), String>;
+
+    /// `/title off|clear|none`: clear the session window title with the same
+    /// baseline persistence/redraw semantics.
+    fn clear_window_title(&mut self) -> Result<(), String>;
+
+    /// `/rc status`: current remote-control status line.
+    fn remote_status(&self) -> String;
+
+    /// `/rc link`: live session link plus optional computer-management URL.
+    fn remote_link(&self) -> Option<RemoteLink>;
+
+    /// `/rc open`: synchronous single browser attempt over the authoritative
+    /// URL-opening helper; outcome carries the URL for exact message text.
+    fn remote_browser_open(&self) -> RemoteOpenOutcome;
+
+    /// `/rc start`: whether the active-turn copy applies.
+    fn remote_start_info(&self) -> RemoteStartInfo;
+
+    /// `/rc stop`: refusal reason while a remote turn/envelope is active.
+    fn remote_stop_refusal(&self) -> Option<String>;
+
+    /// `/remote-env open`: validate the hosted-work Git target host-side and
+    /// return the encoded URL plus raw repo/branch echoes; `None` reproduces
+    /// the unavailable-target error. Credentials never appear in values or
+    /// errors.
+    fn resolve_hosted_work_target(&self) -> Option<HostedWorkTarget>;
+}
