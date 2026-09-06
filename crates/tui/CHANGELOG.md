@@ -477,6 +477,14 @@ Reports and reproductions that shaped this release:
 
 ### Fixed
 
+- Read-only Fleet workers no longer send `"action": {"enum": null}` in their
+  projected `bash` schema. The read-only projection probed the action enum
+  with a mutating index, which auto-vivified the key on schemas that have no
+  action property, and strict OpenAI-compatible validators then rejected the
+  whole request (`null is not of type "array"`). The probe is non-mutating
+  now, in both the read-only projection and the `Run` arm next to it, and a
+  regression test walks the whole projected catalog for nulls
+  (#5944, thanks @gaord).
 - Fast typing no longer corrupts the composer. The paste-burst heuristic ran
   on every session until a real bracketed paste arrived, holding, buffering,
   retro-grabbing, and absorbing Enter on timing guesses; it is now

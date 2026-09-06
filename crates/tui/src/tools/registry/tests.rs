@@ -1802,6 +1802,8 @@ fn a_builder_upgrade_replaces_the_tool_instead_of_registering_it_twice() {
             .any(|tool| tool.name() == "apply_patch"),
         "the upgrade still adds apply_patch"
     );
+}
+
 /// Regression probe for the fleet-52663788 class of provider 400
 /// (`Invalid schema for function 'bash': null is not of type "array"`):
 /// a read-only Fleet worker (reviewer) projects its tool schemas before the
