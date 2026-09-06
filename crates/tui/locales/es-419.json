@@ -1454,6 +1454,7 @@
   "ProviderExternalPinnedPathWarning": "Advertencia: cambió la ruta de credenciales detectada para {owner}; el consentimiento sigue fijado a {path}.",
   "ToolProjectionWarning": "Advertencia: {provider} omitió herramientas incompatibles en esta solicitud: {tools}",
   "SnapshotsDisabledNotice": "Las instantáneas y /undo están desactivados para {workspace}: {reason} Sube `{config_key}` en config.toml (o ponlo en 0 para quitar el límite) para activarlos.",
+  "SessionIdDivergedNotice": "La identidad de la sesión cambió bajo esta ventana: el motor ahora guarda checkpoints como {next} (antes era {previous}). Los checkpoints anteriores quedan bajo el id anterior; `codewhale sessions` lista ambos y `codewhale resume {previous}` reabre el anterior.",
   "ProviderExternalSemanticsRevoke": "{semantics} | revocar: {revoke}",
   "ProviderExternalRevoke": "revocar: {revoke}",
   "ProviderExternalChoiceTitle": " Acceso a credencial externa · {provider} ",

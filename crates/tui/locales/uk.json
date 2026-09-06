@@ -1431,6 +1431,7 @@
   "ProviderExternalPinnedPathWarning": "Попередження: шлях облікових даних {owner} у середовищі змінився; згода залишається закріпленою за {path}.",
   "ToolProjectionWarning": "Попередження: {provider} вилучив несумісні інструменти для цього запиту: {tools}",
   "SnapshotsDisabledNotice": "Знімки та /undo вимкнено для {workspace}: {reason} Збільште `{config_key}` у config.toml (або встановіть 0, щоб зняти обмеження), щоб увімкнути їх.",
+  "SessionIdDivergedNotice": "Ідентифікатор сеансу в цьому вікні змінився: рушій тепер зберігає контрольні точки як {next} (було {previous}). Попередні точки лишаються під старим id; `codewhale sessions` показує обидва, а `codewhale resume {previous}` відкриває попередній сеанс.",
   "ProviderExternalSemanticsRevoke": "{semantics} | відкликання: {revoke}",
   "ProviderExternalRevoke": "відкликання: {revoke}",
   "ProviderExternalChoiceTitle": " Доступ до зовнішніх облікових даних · {provider} ",

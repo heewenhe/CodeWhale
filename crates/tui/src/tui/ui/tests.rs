@@ -590,6 +590,19 @@ fn permission_cycle_shortcut_accepts_both_shift_tab_encodings() {
 
 /// A live session in a deterministic focus state: no onboarding, no launch
 /// screen, no modal, composer owns the keys.
+#[test]
+fn session_id_divergence_notice_names_both_ids_and_the_resume_command() {
+    // #5931: a diverged engine session id was only logged; the operator now
+    // sees which id the checkpoints moved to and how to reopen the old one.
+    let app = focus_test_app();
+    let text =
+        super::event_loop::session_id_divergence_notice(&app, "sess-old-1234", "sess-new-5678");
+    assert!(text.contains("sess-new-5678"), "{text}");
+    assert!(text.contains("sess-old-1234"), "{text}");
+    assert!(text.contains("codewhale resume sess-old-1234"), "{text}");
+    assert!(text.contains("codewhale sessions"), "{text}");
+}
+
 fn focus_test_app() -> App {
     let mut app = create_test_app();
     app.onboarding = crate::tui::app::OnboardingState::None;

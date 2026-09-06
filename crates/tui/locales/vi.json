@@ -1454,6 +1454,7 @@
   "ProviderExternalPinnedPathWarning": "Cảnh báo: đường dẫn thông tin xác thực hiện tại của {owner} đã thay đổi; sự đồng ý vẫn được ghim vào {path}.",
   "ToolProjectionWarning": "Cảnh báo: {provider} đã bỏ qua các công cụ không tương thích trong yêu cầu này: {tools}",
   "SnapshotsDisabledNotice": "Ảnh chụp nhanh và /undo đang tắt cho {workspace}: {reason} Tăng `{config_key}` trong config.toml (hoặc đặt 0 để bỏ giới hạn) để bật lại.",
+  "SessionIdDivergedNotice": "Danh tính phiên trong cửa sổ này đã thay đổi: engine hiện lưu checkpoint dưới {next} (trước đó là {previous}). Các checkpoint cũ vẫn nằm dưới id cũ; `codewhale sessions` liệt kê cả hai và `codewhale resume {previous}` mở lại phiên cũ.",
   "ProviderExternalSemanticsRevoke": "{semantics} | thu hồi: {revoke}",
   "ProviderExternalRevoke": "thu hồi: {revoke}",
   "ProviderExternalChoiceTitle": " Truy cập thông tin xác thực ngoài · {provider} ",

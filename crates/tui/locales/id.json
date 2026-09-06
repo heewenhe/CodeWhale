@@ -1431,6 +1431,7 @@
   "ProviderExternalPinnedPathWarning": "Peringatan: path kredensial ambient {owner} berubah; persetujuan tetap terkunci pada {path}.",
   "ToolProjectionWarning": "Peringatan: {provider} menghilangkan alat yang tidak kompatibel untuk permintaan ini: {tools}",
   "SnapshotsDisabledNotice": "Snapshot dan /undo nonaktif untuk {workspace}: {reason} Naikkan `{config_key}` di config.toml (atau setel 0 untuk menghapus batas) untuk mengaktifkannya.",
+  "SessionIdDivergedNotice": "Identitas sesi di jendela ini berubah: engine kini menyimpan checkpoint sebagai {next} (sebelumnya {previous}). Checkpoint lama tetap di id lama; `codewhale sessions` menampilkan keduanya dan `codewhale resume {previous}` membuka kembali yang lama.",
   "ProviderExternalSemanticsRevoke": "{semantics} | cabut: {revoke}",
   "ProviderExternalRevoke": "cabut: {revoke}",
   "ProviderExternalChoiceTitle": " Akses kredensial eksternal · {provider} ",
