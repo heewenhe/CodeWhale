@@ -23,12 +23,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ctx NN%` only from 50% up, which left most of a session with no context
   signal at all; it now paints from 0% and keeps its warning colour from 80%
   up (#5950).
+- A child agent parked because its parent's turn ended is shown as `parked`
+  in the Agents panel, the sidebar and Agent Details, with `resume_from` /
+  `cancel` as the recovery, instead of wearing the same "waiting for input"
+  label as a child that asked a question. Parked work sorts below live and
+  answerable work and no longer inflates the `blocked` chip; the receipts
+  roster and the wire `state` gain `parked` (#5906, #5921).
 
 ### Added
 
 - The `/theme` picker now discovers valid user-authored `custom:<name>`
   overlays, previews their colors, highlights the active overlay, and preserves
   it when the picker is opened and committed without navigation (#5901).
+- Compaction has two standing knobs next to `[context]` in config.toml:
+  `[compaction] summary_instructions` (appended to the summarizer prompt on
+  every manual and automatic pass; `/compact <focus>` still composes after
+  it) and `[compaction] retained_user_message_tokens` (default 20 000,
+  clamped 2 000..=200 000) for the verbatim user-message budget. Both are
+  absent by default and absent means the pre-existing behavior. The
+  `/compact` receipt names the effective budget and whether operator
+  instructions applied (#5956).
+- `[tools] user_input_max_questions` (default 6, 1..=10) and
+  `[tools] user_input_max_options` (default 4, 2..=10) replace the hard-coded
+  `request_user_input` limits; the validator, the tool schema and its
+  description read one value, spawned children inherit the parent's ceilings,
+  and a rejected payload names the ceiling it hit and the key to raise (#5949).
+- The slash menu shows a command's usage line and its subcommands as soon as
+  a space is typed after the verb, filtered by what follows, so Tab completes
+  `/workspace wor` to `/workspace worktrees`; `/help` states the focused
+  command's usage in its detail slot (#5952).
+- The three `/fleet` views (roster, live workers, saved teams) are one
+  back-navigable stack: `Esc` in workers or saved teams returns to the roster
+  with its cursor intact and still closes the window at the root or on direct
+  entry; the `Esc` footer hint says `back` or `close` accordingly (#5954).
+- `/fleet` presents its prioritized core (`members`, `setup`, `teams`,
+  `workers`, `help`); every other verb stays dispatchable and is documented
+  under explicit groups in `/fleet help`. The roster no longer shows the
+  untouched built-in `general` alias next to `worker` (#5888).
 
 ## [0.9.12] - 2026-09-04
 
