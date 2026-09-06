@@ -8134,6 +8134,7 @@ impl RuntimeThreadManager {
                 } else {
                     cfg.tools_always_load()
                 },
+                user_input_limits: cfg.user_input_limits(),
                 tools: (!isolated_chat).then(|| cfg.tools.clone()).flatten(),
                 verbosity: cfg.verbosity.clone(),
                 workspace_follow_symlinks: settings.workspace_follow_symlinks,

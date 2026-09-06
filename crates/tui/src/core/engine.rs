@@ -471,6 +471,10 @@ pub struct EngineConfig {
     /// Native tools that should stay in the model-visible catalog even when
     /// they are outside the small default core surface (#2076).
     pub tools_always_load: HashSet<String>,
+    /// Effective `request_user_input` payload ceilings resolved from `[tools]`
+    /// (#5949). One authority for the validator, the tool schema, and the
+    /// tool description.
+    pub user_input_limits: crate::tools::user_input::UserInputLimits,
     /// When true and `/usr/bin/bwrap` is executable on Linux, route exec_shell
     /// through bubblewrap (#2184).
     pub prefer_bwrap: bool,
@@ -596,6 +600,7 @@ impl Default for EngineConfig {
                 crate::config::DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT_SECS,
             ),
             tools_always_load: HashSet::new(),
+            user_input_limits: crate::tools::user_input::UserInputLimits::default(),
             prefer_bwrap: false,
             bwrap_extensions: crate::sandbox::BwrapMountExtensions::default(),
             // Fail-closed (F7): `Engine::new` unconditionally installs this

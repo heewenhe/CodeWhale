@@ -1397,6 +1397,41 @@ fn tools_always_load_parses_and_trims_names() {
 }
 
 #[test]
+fn user_input_limits_default_when_tools_table_is_absent() {
+    let parsed: ConfigFile = toml::from_str("").expect("empty config");
+    let limits = parsed.base.user_input_limits();
+    assert_eq!(limits.max_questions, 6);
+    assert_eq!(limits.max_options, 4);
+}
+
+#[test]
+fn user_input_limits_read_from_tools_table_and_clamp() {
+    let parsed: ConfigFile = toml::from_str(
+        r#"
+        [tools]
+        user_input_max_questions = 9
+        user_input_max_options = 6
+        "#,
+    )
+    .expect("tools config");
+    let limits = parsed.base.user_input_limits();
+    assert_eq!(limits.max_questions, 9);
+    assert_eq!(limits.max_options, 6);
+
+    let clamped: ConfigFile = toml::from_str(
+        r#"
+        [tools]
+        user_input_max_questions = 50
+        user_input_max_options = 0
+        "#,
+    )
+    .expect("tools config");
+    let clamped = clamped.base.user_input_limits();
+    assert_eq!(clamped.max_questions, 10);
+    assert_eq!(clamped.max_options, 2);
+}
+
+#[test]
 fn explicit_duckduckgo_search_provider_is_preserved() {
     let config: Config = toml::from_str(
         r#"

@@ -211,6 +211,13 @@ memory_path = "~/.codewhale/memory.md"
 # through ToolSearch and loaded on first use.
 # [tools]
 # always_load = ["git_show", "notify"]
+#
+# `request_user_input` payload ceilings (#5949). The model may ask up to
+# `user_input_max_questions` questions per call, each offering up to
+# `user_input_max_options` options. Out-of-range values are clamped to the
+# supported ranges (1..=10 and 2..=10) with a warning.
+# user_input_max_questions = 6
+# user_input_max_options = 4
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Product telemetry — opt-in, off by default

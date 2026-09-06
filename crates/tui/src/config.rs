@@ -2305,6 +2305,19 @@ pub struct ToolsConfig {
     /// Each override replaces or disables the named tool.
     #[serde(default)]
     pub overrides: Option<HashMap<String, ToolOverride>>,
+
+    /// Ceiling on how many questions one `request_user_input` call may ask
+    /// (#5949). `None` uses
+    /// [`crate::tools::user_input::DEFAULT_MAX_QUESTIONS`] (6). Values outside
+    /// `1..=10` are clamped with a warning rather than failing the load.
+    #[serde(default)]
+    pub user_input_max_questions: Option<u32>,
+
+    /// Ceiling on how many options each `request_user_input` question may
+    /// offer. `None` uses [`crate::tools::user_input::DEFAULT_MAX_OPTIONS`]
+    /// (4). Values outside `2..=10` are clamped with a warning.
+    #[serde(default)]
+    pub user_input_max_options: Option<u32>,
 }
 
 /// Persistent-goal loop controls (`[goal]` table in config.toml, #5052).
@@ -4785,6 +4798,18 @@ impl Config {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Effective `request_user_input` payload ceilings for this session
+    /// (#5949). Resolved once per engine build; out-of-range `[tools]` values
+    /// clamp with a single warning naming the key and the value used.
+    #[must_use]
+    pub fn user_input_limits(&self) -> crate::tools::user_input::UserInputLimits {
+        let tools = self.tools.as_ref();
+        crate::tools::user_input::UserInputLimits::from_config_values(
+            tools.and_then(|t| t.user_input_max_questions),
+            tools.and_then(|t| t.user_input_max_options),
+        )
     }
 
     #[must_use]
