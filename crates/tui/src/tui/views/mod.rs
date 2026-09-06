@@ -5356,6 +5356,13 @@ pub struct SubAgentsView {
     locale: Locale,
     /// Wall clock anchor for the working-wake frame.
     opened_at: std::time::Instant,
+    /// True when the Fleet roster is parked directly underneath on the view
+    /// stack (#5954), i.e. this view was reached with `Tab`/`w` from the
+    /// roster. `Esc` still pops exactly one view — the flag only decides
+    /// whether the footer promises `back` or `close`, and lets `F` return to
+    /// the parked roster instead of stacking a second one. Direct entry
+    /// (`/fleet workers`, the Work dock) leaves it false, so `Esc` closes.
+    back_to_fleet_roster: bool,
 }
 
 /// Build the agent rows shown by `/subagents`.
@@ -5511,6 +5518,7 @@ impl SubAgentsView {
             motion: crate::tui::motion::mode::MotionMode::Still,
             locale: Locale::En,
             opened_at: std::time::Instant::now(),
+            back_to_fleet_roster: false,
         }
     }
 
@@ -5521,6 +5529,24 @@ impl SubAgentsView {
         view.motion = app.motion_policy().mode();
         view.locale = app.ui_locale;
         view
+    }
+
+    /// Mark this view as pushed on top of the Fleet roster (#5954), so the
+    /// footer says `back` and `F` pops to the parked roster.
+    #[must_use]
+    pub fn over_fleet_roster(mut self) -> Self {
+        self.back_to_fleet_roster = true;
+        self
+    }
+
+    /// Footer label for `Esc`: `back` while the roster is parked underneath,
+    /// `close` at the root. The hint has to name what the key actually does.
+    fn esc_hint_label(&self) -> std::borrow::Cow<'static, str> {
+        if self.back_to_fleet_roster {
+            tr(self.locale, MessageId::SetupActionBack)
+        } else {
+            tr(self.locale, MessageId::SessionsActionClose)
+        }
     }
 
     /// Working-wake frame for this render: 0 unless motion is Full.
@@ -5621,6 +5647,12 @@ impl ModalView for SubAgentsView {
                     Some(agent_id) => ViewAction::Emit(ViewEvent::SidebarAgentCancel { agent_id }),
                     None => ViewAction::None,
                 }
+            }
+            // The roster is the same destination either way: pop back to the
+            // parked one when there is one (#5954) — re-running `/fleet`
+            // would stack a duplicate roster and lose its cursor.
+            KeyCode::Char('f') | KeyCode::Char('F') if self.back_to_fleet_roster => {
+                ViewAction::Close
             }
             KeyCode::Char('f') | KeyCode::Char('F') => {
                 ViewAction::Emit(ViewEvent::CommandPaletteSelected {
@@ -5841,7 +5873,7 @@ impl ModalView for SubAgentsView {
             area,
             buf,
             &[
-                ActionHint::new("Esc", tr(self.locale, MessageId::SessionsActionClose)),
+                ActionHint::new("Esc", self.esc_hint_label()),
                 ActionHint::new("↑/↓", tr(self.locale, MessageId::CtxInspActionSelect)),
                 ActionHint::new("Enter", tr(self.locale, MessageId::ExtensionsActionFocus)),
                 ActionHint::new("X", tr(self.locale, MessageId::SidebarStopControl)),
@@ -6339,6 +6371,72 @@ mod tests {
             || SubAgentsView::new(Vec::new()),
             &["close", "refresh", "setup"],
         );
+    }
+
+    /// #5954: the `Esc` hint has to name what the key does — `back` while the
+    /// Fleet roster is parked underneath, `close` on direct entry.
+    #[test]
+    fn subagents_esc_hint_says_back_over_the_roster_and_close_at_the_root() {
+        let area = Rect::new(0, 0, 160, 40);
+
+        let direct = SubAgentsView::new(Vec::new());
+        let mut direct_buf = Buffer::empty(area);
+        direct.render(area, &mut direct_buf);
+        let direct_text = buffer_text(&direct_buf, area);
+        assert!(
+            direct_text.contains("Esc close"),
+            "direct entry must still promise close: {direct_text}"
+        );
+
+        let over_roster = SubAgentsView::new(Vec::new()).over_fleet_roster();
+        let mut back_buf = Buffer::empty(area);
+        over_roster.render(area, &mut back_buf);
+        let back_text = buffer_text(&back_buf, area);
+        assert!(
+            back_text.contains("Esc back"),
+            "over the roster the hint must promise back: {back_text}"
+        );
+        assert!(
+            !back_text.contains("Esc close"),
+            "over the roster the hint must not still promise close: {back_text}"
+        );
+    }
+
+    /// #5954: workers opened directly (`/fleet workers`, the Work dock) is the
+    /// root of its own stack, so `Esc` closes the window as before.
+    #[test]
+    fn subagents_opened_directly_closes_on_esc() {
+        let mut stack = ViewStack::new();
+        stack.push(SubAgentsView::new(Vec::new()));
+        stack.handle_key(KeyEvent::new(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(stack.is_empty(), "direct entry must close on Esc");
+    }
+
+    /// #5954: `F` in workers is the roster door. With a roster parked below,
+    /// it pops back to it instead of re-running `/fleet` and stacking a
+    /// duplicate roster.
+    #[test]
+    fn subagents_f_pops_back_to_the_parked_roster() {
+        let mut over_roster = SubAgentsView::new(Vec::new()).over_fleet_roster();
+        assert!(matches!(
+            over_roster.handle_key(KeyEvent::new(
+                crossterm::event::KeyCode::Char('F'),
+                crossterm::event::KeyModifiers::NONE,
+            )),
+            ViewAction::Close
+        ));
+
+        let mut direct = SubAgentsView::new(Vec::new());
+        assert!(matches!(
+            direct.handle_key(KeyEvent::new(
+                crossterm::event::KeyCode::Char('F'),
+                crossterm::event::KeyModifiers::NONE,
+            )),
+            ViewAction::Emit(ViewEvent::CommandPaletteSelected { .. })
+        ));
     }
 
     #[test]
