@@ -1803,3 +1803,70 @@ fn a_builder_upgrade_replaces_the_tool_instead_of_registering_it_twice() {
         "the upgrade still adds apply_patch"
     );
 }
+
+/// Regression probe for the fleet-52663788 class of provider 400
+/// (`Invalid schema for function 'bash': null is not of type "array"`):
+/// a read-only Fleet worker (reviewer) projects its tool schemas before the
+/// wire; no projected schema may carry a JSON null, because strict
+/// OpenAI-compatible validators reject null where arrays/objects are typed.
+#[test]
+fn fleet_readonly_reviewer_wire_catalog_carries_no_null_schema_fields() {
+    use crate::tools::spec::{
+        ToolMutationAuthority, ToolShellAuthority, ToolVerificationAuthority,
+    };
+
+    fn collect_null_paths(value: &Value, path: String, out: &mut Vec<String>) {
+        match value {
+            Value::Null => out.push(path),
+            Value::Object(map) => {
+                for (key, child) in map {
+                    collect_null_paths(child, format!("{path}.{key}"), out);
+                }
+            }
+            Value::Array(items) => {
+                for (index, child) in items.iter().enumerate() {
+                    collect_null_paths(child, format!("{path}[{index}]"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let tmp = tempdir().expect("tempdir");
+    let reviewer_authority = ToolAuthorityEnvelope {
+        schema_version: 1,
+        owner: "reviewer".to_string(),
+        authority: ToolMutationAuthority::ReadOnly,
+        network_access: Some(false),
+        shell: ToolShellAuthority::ReadOnly,
+        verification: ToolVerificationAuthority::None,
+        writable_roots: Vec::new(),
+        writable_files: Vec::new(),
+        coordination_contracts: Vec::new(),
+    };
+    let context = ToolContext::new(tmp.path().to_path_buf())
+        .with_tool_authority(reviewer_authority)
+        .expect("reviewer authority");
+
+    let registry = ToolRegistryBuilder::new()
+        .with_file_tools()
+        .with_foreground_shell_tools()
+        .with_search_tools()
+        .build(context);
+    let tools = registry.to_api_tools();
+    assert!(
+        tools.iter().any(|tool| tool.name == "bash"),
+        "reviewer keeps classifier-bounded bash"
+    );
+
+    for tool in &tools {
+        let mut nulls = Vec::new();
+        collect_null_paths(&tool.input_schema, "$".to_string(), &mut nulls);
+        assert!(
+            nulls.is_empty(),
+            "tool {} schema carries null at {nulls:?}: {}",
+            tool.name,
+            tool.input_schema
+        );
+    }
+}

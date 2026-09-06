@@ -505,12 +505,24 @@ fn project_readonly_evidence_schema(name: &str, schema: &mut Value) {
     if name == "Run" {
         // The shared classifier remains authoritative for `args`; the schema
         // removes the only field that can name verifier programs.
-        if let Some(properties) = schema["properties"].as_object_mut() {
+        if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
             properties.remove("commands");
         }
         return;
     }
-    let Some(actions) = schema["properties"]["action"]["enum"].as_array_mut() else {
+    // Probe with `pointer_mut`, never `schema["properties"]["action"]["enum"]`:
+    // serde_json's IndexMut auto-vivifies missing keys by inserting Null, so
+    // the old probe left `properties.action = {"enum": null}` inside schemas
+    // that have no action property (e.g. lowercase `bash`). Strict
+    // OpenAI-compatible validators then reject the whole request with
+    // `Invalid schema for function 'bash': null is not of type "array"`
+    // (observed on Fleet read-only workers; see registry tests).
+    // The same probe idiom lives in `tools/subagent` (grep `pointer_mut(
+    // "/properties/action/enum")`); keep the two sites greppable as one.
+    let Some(actions) = schema
+        .pointer_mut("/properties/action/enum")
+        .and_then(Value::as_array_mut)
+    else {
         return;
     };
     match name {
