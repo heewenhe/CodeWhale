@@ -6381,7 +6381,7 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "terminal/send",
         "terminal/wait",
         "todo_write",
-        "tts",
+        // `tts` is a hidden compat alias for `speech` since #5941.
         "tui_help",
         "validate_data",
         "verify",
