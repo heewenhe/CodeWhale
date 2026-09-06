@@ -1620,7 +1620,10 @@ fn build_default_headers(
         // #3014: most Messages API routes authenticate with `x-api-key`.
         // OpenModel also supports Bearer auth for Messages, and its `/models`
         // endpoint requires it, so the header chooser below keeps OpenModel on
-        // Bearer while still pinning the Anthropic wire contract here.
+        // Bearer while still pinning the Anthropic wire contract here. The
+        // Codewhale API is the same shape: its Anthropic passthrough
+        // authenticates the account key with `Authorization: Bearer` on every
+        // protocol and does not accept `x-api-key`.
         headers.insert(
             HeaderName::from_static("anthropic-version"),
             HeaderValue::from_static("2023-06-01"),
@@ -1630,7 +1633,10 @@ fn build_default_headers(
         None
     } else if !api_key.is_empty()
         && uses_anthropic_messages
-        && api_provider != ApiProvider::Openmodel
+        && !matches!(
+            api_provider,
+            ApiProvider::Openmodel | ApiProvider::Codewhale
+        )
     {
         Some(HeaderName::from_static("x-api-key"))
     } else if !api_key.is_empty()
@@ -2551,6 +2557,10 @@ impl DeepSeekClient {
                 &fingerprint,
                 fetched_at,
             )?
+        } else if provider == "codewhale" {
+            // The Codewhale API's own listing states the wire protocol per
+            // model, so it is the catalog authority for this route.
+            codewhale_catalog_offerings_from_body(&body, &provider, &fingerprint, fetched_at)?
         } else if provider == "concentrate" {
             // Concentrate's unauthenticated `GET /v1/models` is the same
             // OpenAI list shape (`{"object":"list","data":[{"id":..}]}`);
@@ -2649,8 +2659,12 @@ impl DeepSeekClient {
     /// from other sources.
     ///
     /// Activated for providers whose model list is not covered by the
-    /// Models.dev catalog (TelecomJS TokenHub, Eden AI, Concentrate, local
-    /// Ollama).
+    /// Models.dev catalog (TelecomJS TokenHub, Eden AI, Concentrate, the
+    /// Codewhale API, local Ollama).
+    ///
+    /// The Codewhale API is the strongest case for this path: its catalog is
+    /// the *account's* connected providers, so no cross-provider catalog can
+    /// know it and the bundled rows are only an offline bootstrap.
     /// Ollama's OpenAI-compat `GET /v1/models` returns the same tags as
     /// native `GET /api/tags`. The refresh is non-fatal: on failure,
     /// existing/bundled rows remain available.
@@ -2663,6 +2677,7 @@ impl DeepSeekClient {
             ApiProvider::Telecomjs
                 | ApiProvider::Edenai
                 | ApiProvider::Concentrate
+                | ApiProvider::Codewhale
                 | ApiProvider::Ollama
         ) {
             return;
@@ -3338,6 +3353,95 @@ fn apply_provider_model_cutline(
 /// catalog rows. Matching model ids on other providers prove no capabilities,
 /// limits, or prices; only an explicit same-provider bundled row may enrich a
 /// live offering.
+/// Parse the Codewhale API's authenticated `GET {base}/models` listing.
+///
+/// The account control plane returns the OpenAI list shape, but every row
+/// carries a `codewhale` block naming the wire protocol Codewhale will use for
+/// that model (`chat-completions` → `{base}/chat/completions`,
+/// `anthropic-messages` → `{base}/messages`). That block is the whole reason
+/// this route is model-aware, so the protocol is read from the response rather
+/// than inferred — the namespace inference in
+/// [`codewhale_config::route::codewhale_endpoint_key_for_model`] is only the
+/// offline fallback for a row this listing did not describe.
+///
+/// The listing is untrusted remote data: unusable rows are dropped rather than
+/// failing the refresh, and nothing here claims capabilities, limits, or
+/// pricing the account service did not state.
+fn codewhale_catalog_offerings_from_body(
+    body: &str,
+    provider: &str,
+    fingerprint: &str,
+    fetched_at: u64,
+) -> Result<Vec<CatalogOffering>, CatalogRefreshError> {
+    #[derive(serde::Deserialize)]
+    struct Listing {
+        #[serde(default)]
+        data: Vec<Row>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Row {
+        #[serde(default)]
+        id: String,
+        #[serde(default)]
+        codewhale: Option<RowMeta>,
+    }
+    #[derive(serde::Deserialize)]
+    struct RowMeta {
+        #[serde(default)]
+        protocol: Option<String>,
+        #[serde(default)]
+        default: bool,
+    }
+
+    let listing: Listing =
+        serde_json::from_str(body).map_err(|_| CatalogRefreshError::InvalidResponse)?;
+    let mut offerings: Vec<CatalogOffering> = Vec::with_capacity(listing.data.len());
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for row in listing.data {
+        let id = row.id.trim().to_string();
+        if id.is_empty() || !seen.insert(id.clone()) {
+            continue;
+        }
+        // An unstated or unknown protocol falls back to the namespace rule
+        // rather than being dropped: the account already proved it serves this
+        // model by listing it.
+        let endpoint_key = match row
+            .codewhale
+            .as_ref()
+            .and_then(|meta| meta.protocol.as_deref())
+            .map(str::trim)
+        {
+            Some("anthropic-messages") => "messages",
+            Some("chat-completions") => "chat",
+            _ => codewhale_config::route::codewhale_endpoint_key_for_model(&id),
+        };
+        offerings.push(CatalogOffering {
+            provider: provider.to_string(),
+            wire_model_id: id,
+            canonical_model: None,
+            endpoint_key: endpoint_key.to_string(),
+            default_for_provider: row.codewhale.is_some_and(|meta| meta.default),
+            family: None,
+            limit: None,
+            cost: None,
+            modalities: None,
+            attachment: None,
+            reasoning: None,
+            tool_call: None,
+            structured_output: None,
+            reasoning_options: Vec::new(),
+            source: CatalogSource::Live {
+                base_url_fingerprint: fingerprint.to_string(),
+                fetched_at,
+            },
+        });
+    }
+    if offerings.is_empty() {
+        return Err(CatalogRefreshError::EmptyList);
+    }
+    Ok(offerings)
+}
+
 fn named_gateway_catalog_offerings_from_body(
     body: &str,
     kind: codewhale_config::ProviderKind,
@@ -3632,6 +3736,10 @@ pub(super) fn apply_reasoning_effort(
             // This gateway can route unrelated model families, so the generic
             // provider must not inject a model-specific reasoning dialect.
             ApiProvider::Edenai => {}
+            // The Codewhale API is a passthrough to the account's own
+            // connected provider; it documents no Codewhale-owned
+            // reasoning-effort translation, so nothing is invented here.
+            ApiProvider::Codewhale => {}
             // Concentrate rides the Responses wire (`reasoning.effort`), never
             // these Chat Completions controls.
             ApiProvider::Concentrate => {}
@@ -3726,6 +3834,10 @@ pub(super) fn apply_reasoning_effort(
             // Chat Completions API does not support reasoning_effort or thinking.
             ApiProvider::Telecomjs => {}
             ApiProvider::Edenai => {}
+            // The Codewhale API is a passthrough to the account's own
+            // connected provider; it documents no Codewhale-owned
+            // reasoning-effort translation, so nothing is invented here.
+            ApiProvider::Codewhale => {}
             // Concentrate rides the Responses wire (`reasoning.effort`), never
             // these Chat Completions controls.
             ApiProvider::Concentrate => {}
@@ -3846,6 +3958,10 @@ pub(super) fn apply_reasoning_effort(
             // Chat Completions API does not support reasoning_effort or thinking.
             ApiProvider::Telecomjs => {}
             ApiProvider::Edenai => {}
+            // The Codewhale API is a passthrough to the account's own
+            // connected provider; it documents no Codewhale-owned
+            // reasoning-effort translation, so nothing is invented here.
+            ApiProvider::Codewhale => {}
             // Concentrate rides the Responses wire (`reasoning.effort`), never
             // these Chat Completions controls.
             ApiProvider::Concentrate => {}
@@ -7958,6 +8074,32 @@ mod tests {
     }
 
     #[test]
+    fn codewhale_authenticates_both_protocols_with_bearer_never_x_api_key() {
+        // The Codewhale API is a passthrough: it authenticates the account key
+        // with `Authorization: Bearer` on the Anthropic Messages route too, so
+        // the usual Messages `x-api-key` default must not apply here.
+        for wire in [WireFormat::ChatCompletions, WireFormat::AnthropicMessages] {
+            let headers = build_default_headers(
+                "cwc_key_test",
+                &HashMap::new(),
+                ApiProvider::Codewhale,
+                "https://api.codewhale.net/v1",
+                wire,
+                false,
+            )
+            .expect("headers");
+            assert_eq!(
+                headers
+                    .get(AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok()),
+                Some("Bearer cwc_key_test"),
+                "{wire:?}"
+            );
+            assert!(headers.get("x-api-key").is_none(), "{wire:?}");
+        }
+    }
+
+    #[test]
     fn deepseek_anthropic_uses_anthropic_header_dialect() {
         let mut extra = HashMap::new();
         extra.insert("Authorization".to_string(), "Bearer wrong".to_string());
@@ -10078,6 +10220,63 @@ mod tests {
             !out.iter()
                 .any(|v| v.get("role").and_then(Value::as_str) == Some("tool")),
             "all orphaned tool results should be removed"
+        );
+    }
+
+    #[test]
+    fn codewhale_models_listing_carries_the_wire_protocol_per_model() {
+        let payload = r#"{
+            "object": "list",
+            "data": [
+                {"id": "deepseek/deepseek-v4-pro", "object": "model", "owned_by": "deepseek",
+                 "codewhale": {"provider": "deepseek", "model": "deepseek-v4-pro",
+                               "protocol": "chat-completions",
+                               "endpoint": "/v1/chat/completions",
+                               "default": true, "usable": true}},
+                {"id": "anthropic/claude-sonnet-5", "object": "model", "owned_by": "anthropic",
+                 "codewhale": {"provider": "anthropic", "model": "claude-sonnet-5",
+                               "protocol": "anthropic-messages",
+                               "endpoint": "/v1/messages", "usable": true}},
+                {"id": "deepseek/deepseek-v4-pro", "object": "model"},
+                {"id": "   ", "object": "model"},
+                {"id": "anthropic/claude-opus-4-8", "object": "model"}
+            ]
+        }"#;
+
+        let rows = codewhale_catalog_offerings_from_body(payload, "codewhale", "fp", 7)
+            .expect("the account listing should parse");
+        let by_id: std::collections::BTreeMap<&str, &CatalogOffering> = rows
+            .iter()
+            .map(|row| (row.wire_model_id.as_str(), row))
+            .collect();
+        assert_eq!(rows.len(), 3, "blank and duplicate ids are dropped");
+        // The protocol comes from the response, not from a compiled roster.
+        assert_eq!(by_id["deepseek/deepseek-v4-pro"].endpoint_key, "chat");
+        assert!(by_id["deepseek/deepseek-v4-pro"].default_for_provider);
+        assert_eq!(by_id["anthropic/claude-sonnet-5"].endpoint_key, "messages");
+        assert!(!by_id["anthropic/claude-sonnet-5"].default_for_provider);
+        // A row with no `codewhale` block still resolves through the namespace
+        // rule rather than being dropped: the account listed it.
+        assert_eq!(by_id["anthropic/claude-opus-4-8"].endpoint_key, "messages");
+        // Nothing is claimed that the account service did not state.
+        assert!(
+            rows.iter().all(|row| row.canonical_model.is_none()
+                && row.limit.is_none()
+                && row.cost.is_none())
+        );
+
+        assert_eq!(
+            codewhale_catalog_offerings_from_body(
+                r#"{"object":"list","data":[]}"#,
+                "codewhale",
+                "fp",
+                7
+            ),
+            Err(CatalogRefreshError::EmptyList)
+        );
+        assert_eq!(
+            codewhale_catalog_offerings_from_body("not json", "codewhale", "fp", 7),
+            Err(CatalogRefreshError::InvalidResponse)
         );
     }
 

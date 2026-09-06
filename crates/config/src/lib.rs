@@ -483,6 +483,16 @@ pub struct ProvidersToml {
         alias = "concentrateai"
     )]
     pub concentrate: ProviderConfigToml,
+    /// Codewhale API — account-backed model access over connected provider keys.
+    #[serde(
+        default,
+        skip_serializing_if = "ProviderConfigToml::is_empty",
+        alias = "codewhale-api",
+        alias = "codewhale_api",
+        alias = "cw-api",
+        alias = "codewhale-cloud"
+    )]
+    pub codewhale: ProviderConfigToml,
     /// Alibaba Cloud Model Studio — Token Plan (OpenAI-compatible endpoint).
     #[serde(
         default,
@@ -709,6 +719,7 @@ impl ProvidersToml {
             ProviderKind::Telecomjs => &self.telecomjs,
             ProviderKind::Edenai => &self.edenai,
             ProviderKind::Concentrate => &self.concentrate,
+            ProviderKind::Codewhale => &self.codewhale,
             ProviderKind::ModelstudioTokenPlan => &self.modelstudio_token_plan,
             ProviderKind::ModelstudioTokenPlanAnthropic => &self.modelstudio_token_plan_anthropic,
             ProviderKind::ModelstudioCodingPlan => &self.modelstudio_coding_plan,
@@ -762,6 +773,7 @@ impl ProvidersToml {
             ProviderKind::Telecomjs => &mut self.telecomjs,
             ProviderKind::Edenai => &mut self.edenai,
             ProviderKind::Concentrate => &mut self.concentrate,
+            ProviderKind::Codewhale => &mut self.codewhale,
             ProviderKind::ModelstudioTokenPlan => &mut self.modelstudio_token_plan,
             ProviderKind::ModelstudioTokenPlanAnthropic => {
                 &mut self.modelstudio_token_plan_anthropic
@@ -4508,6 +4520,7 @@ fn default_model_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Telecomjs => DEFAULT_TELECOMJS_MODEL,
         ProviderKind::Edenai => DEFAULT_EDENAI_MODEL,
         ProviderKind::Concentrate => DEFAULT_CONCENTRATE_MODEL,
+        ProviderKind::Codewhale => DEFAULT_CODEWHALE_MODEL,
         ProviderKind::ModelstudioTokenPlan
         | ProviderKind::ModelstudioTokenPlanAnthropic
         | ProviderKind::ModelstudioCodingPlan
@@ -4562,6 +4575,7 @@ fn default_base_url_for_provider(provider: ProviderKind) -> &'static str {
         ProviderKind::Telecomjs => DEFAULT_TELECOMJS_BASE_URL,
         ProviderKind::Edenai => DEFAULT_EDENAI_BASE_URL,
         ProviderKind::Concentrate => DEFAULT_CONCENTRATE_BASE_URL,
+        ProviderKind::Codewhale => DEFAULT_CODEWHALE_BASE_URL,
         ProviderKind::ModelstudioTokenPlan => DEFAULT_MODELSTUDIO_TOKEN_PLAN_BASE_URL,
         ProviderKind::ModelstudioTokenPlanAnthropic => MODELSTUDIO_TOKEN_PLAN_ANTHROPIC_BASE_URL,
         ProviderKind::ModelstudioCodingPlan => DEFAULT_MODELSTUDIO_CODING_PLAN_BASE_URL,
@@ -7002,6 +7016,8 @@ struct EnvRuntimeOverrides {
     edenai_model: Option<String>,
     concentrate_base_url: Option<String>,
     concentrate_model: Option<String>,
+    codewhale_base_url: Option<String>,
+    codewhale_model: Option<String>,
     modelstudio_token_plan_base_url: Option<String>,
     modelstudio_token_plan_model: Option<String>,
     modelstudio_coding_plan_base_url: Option<String>,
@@ -7360,6 +7376,13 @@ impl EnvRuntimeOverrides {
             concentrate_model: std::env::var("CONCENTRATE_MODEL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            // `CODEWHALE_API_BASE` is a trust boundary, not a plain string:
+            // an origin this route would refuse to send a bearer to is
+            // dropped here rather than resolved into a route.
+            codewhale_base_url: provider::codewhale_api_base_from_env(),
+            codewhale_model: std::env::var("CODEWHALE_MODEL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
             modelstudio_token_plan_base_url: std::env::var("MODELSTUDIO_TOKEN_PLAN_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
@@ -7443,6 +7466,7 @@ impl EnvRuntimeOverrides {
             ProviderKind::Telecomjs => self.telecomjs_base_url.clone(),
             ProviderKind::Edenai => self.edenai_base_url.clone(),
             ProviderKind::Concentrate => self.concentrate_base_url.clone(),
+            ProviderKind::Codewhale => self.codewhale_base_url.clone(),
             ProviderKind::ModelstudioTokenPlan | ProviderKind::ModelstudioTokenPlanAnthropic => {
                 self.modelstudio_token_plan_base_url.clone()
             }
@@ -7491,6 +7515,7 @@ impl EnvRuntimeOverrides {
             ProviderKind::Telecomjs => self.telecomjs_model.clone(),
             ProviderKind::Edenai => self.edenai_model.clone(),
             ProviderKind::Concentrate => self.concentrate_model.clone(),
+            ProviderKind::Codewhale => self.codewhale_model.clone(),
             ProviderKind::ModelstudioTokenPlan | ProviderKind::ModelstudioTokenPlanAnthropic => {
                 self.modelstudio_token_plan_model.clone()
             }

@@ -313,7 +313,10 @@ fn descriptor_for_every_kind_has_nonempty_transport_facts() {
 fn descriptor_protocol_matches_provider_wire() {
     for kind in ProviderKind::ALL {
         let d = ProviderDescriptor::for_kind(kind);
-        if matches!(kind, ProviderKind::Deepseek | ProviderKind::OpencodeZen) {
+        if matches!(
+            kind,
+            ProviderKind::Deepseek | ProviderKind::OpencodeZen | ProviderKind::Codewhale
+        ) {
             assert_eq!(d.wire_policy(), crate::provider::WirePolicy::ModelAware);
             assert_eq!(
                 d.protocol_for_endpoint("chat"),
@@ -1154,6 +1157,79 @@ fn opencode_go_resolver_rejects_messages_models_even_on_custom_base_urls() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn codewhale_route_picks_its_wire_per_model_and_stays_open_to_the_account_catalog() {
+    use super::CODEWHALE_FALLBACK_MODELS;
+
+    let resolver = RouteResolver::new();
+    for model in CODEWHALE_FALLBACK_MODELS {
+        let route = resolver
+            .resolve(&req(Some(ProviderKind::Codewhale), Some(model)))
+            .unwrap_or_else(|error| panic!("{model} should resolve: {error}"));
+        assert_eq!(route.provider_kind(), ProviderKind::Codewhale);
+        // Ids pass through exactly as the account catalog returns them.
+        assert_eq!(route.wire_model_id().as_str(), *model);
+        let expected = if model.starts_with("anthropic/") {
+            RequestProtocol::AnthropicMessages
+        } else {
+            RequestProtocol::ChatCompletions
+        };
+        assert_eq!(route.protocol(), expected, "{model}");
+    }
+
+    let automatic = resolver
+        .resolve(&req(Some(ProviderKind::Codewhale), Some("auto")))
+        .expect("the Codewhale route has a bootstrap default");
+    assert_eq!(
+        automatic.wire_model_id().as_str(),
+        "deepseek/deepseek-v4-pro"
+    );
+    assert_eq!(automatic.protocol(), RequestProtocol::ChatCompletions);
+
+    // A provider the account connected after this build shipped must still
+    // resolve: the account catalog, not a compiled roster, owns the list.
+    let unseen = resolver
+        .resolve(&req(Some(ProviderKind::Codewhale), Some("xai/grok-4.6")))
+        .expect("an account-connected provider this build never heard of");
+    assert_eq!(unseen.wire_model_id().as_str(), "xai/grok-4.6");
+    assert_eq!(unseen.protocol(), RequestProtocol::ChatCompletions);
+    let unseen_anthropic = resolver
+        .resolve(&req(
+            Some(ProviderKind::Codewhale),
+            Some("anthropic/claude-opus-4-8"),
+        ))
+        .expect("the Anthropic namespace routes to the Messages passthrough");
+    assert_eq!(
+        unseen_anthropic.protocol(),
+        RequestProtocol::AnthropicMessages
+    );
+}
+
+#[test]
+fn codewhale_api_base_env_refuses_cleartext_off_loopback() {
+    use crate::provider::codewhale_api_base;
+
+    assert_eq!(
+        codewhale_api_base("https://api.codewhale.net/v1/").as_deref(),
+        Some("https://api.codewhale.net/v1")
+    );
+    assert_eq!(
+        codewhale_api_base("http://127.0.0.1:8787/v1").as_deref(),
+        Some("http://127.0.0.1:8787/v1")
+    );
+    assert!(codewhale_api_base("http://localhost:8787/v1").is_some());
+    for refused in [
+        "",
+        "   ",
+        "http://api.codewhale.net/v1",
+        "https://user:pass@api.codewhale.net/v1",
+        "ftp://api.codewhale.net/v1",
+        "not a url",
+    ] {
+        assert!(codewhale_api_base(refused).is_none(), "{refused:?}");
     }
 }
 

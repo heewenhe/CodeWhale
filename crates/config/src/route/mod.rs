@@ -59,7 +59,8 @@ pub use export::{
 };
 pub use ids::{LogicalModelRef, ModelId, NamespaceHint, ProviderId, RouteId, WireModelId};
 pub use offering::{
-    ProviderModelOffering, RouteLimits, bundled_offerings, opencode_zen_picker_models,
+    CODEWHALE_FALLBACK_MODELS, ProviderModelOffering, RouteLimits, bundled_offerings,
+    codewhale_endpoint_key_for_model, opencode_zen_picker_models,
 };
 pub use policy::{CatalogPolicy, PolicyAction, PolicyEffect, PolicyRule};
 pub use resolver::{RouteRequest, RouteResolver};

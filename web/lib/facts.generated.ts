@@ -27,7 +27,7 @@ export interface RepoFacts {
 }
 
 export const FACTS: RepoFacts = {
-  "generatedAt": "2026-09-05T10:02:18.083Z",
+  "generatedAt": "2026-09-06T05:58:50.132Z",
   "sourceRevision": null,
   "sourceCommittedAt": null,
   "version": "0.9.12",
@@ -268,6 +268,11 @@ export const FACTS: RepoFacts = {
       "id": "concentrate",
       "label": "Concentrate",
       "env": "CONCENTRATE_API_KEY"
+    },
+    {
+      "id": "codewhale",
+      "label": "Codewhale",
+      "env": "CODEWHALE_API_KEY"
     },
     {
       "id": "modelstudio-token-plan",

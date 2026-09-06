@@ -114,6 +114,16 @@ pub struct AccountModelKeyState {
     /// Whether the account service reports a credential for this provider.
     #[serde(default)]
     pub configured: bool,
+    /// Service-reported credential state (for example `active`, `invalid`).
+    ///
+    /// Non-secret presentation metadata: it says whether a stored key is
+    /// usable without ever revealing the key. Absent when the service did not
+    /// state one.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Non-secret label the account holder gave the stored credential.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 /// Versioned secure-storage envelope shared by every local Codewhale surface.

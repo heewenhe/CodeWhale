@@ -122,6 +122,8 @@ pub enum ApiProvider {
     Edenai,
     /// Concentrate — OpenAI Responses-compatible AI gateway (aggregator; BYOK only).
     Concentrate,
+    /// Codewhale API — account-backed model access over connected provider keys.
+    Codewhale,
     /// Alibaba Cloud Model Studio — Token Plan (OpenAI-compatible Chat Completions).
     ModelstudioTokenPlan,
     /// Alibaba Cloud Model Studio — Token Plan Anthropic-compatible endpoint.
@@ -365,7 +367,7 @@ impl ApiProvider {
 
     /// `ApiProvider` discriminant → `ProviderKind` lookup.
     /// Index 1 is `None` for the legacy `DeepseekCN` variant.
-    const KIND_LOOKUP: [Option<codewhale_config::ProviderKind>; 49] = [
+    const KIND_LOOKUP: [Option<codewhale_config::ProviderKind>; 50] = [
         Some(codewhale_config::ProviderKind::Deepseek),
         None, // DeepseekCN
         Some(codewhale_config::ProviderKind::DeepseekAnthropic),
@@ -410,6 +412,7 @@ impl ApiProvider {
         Some(codewhale_config::ProviderKind::Telecomjs),
         Some(codewhale_config::ProviderKind::Edenai),
         Some(codewhale_config::ProviderKind::Concentrate),
+        Some(codewhale_config::ProviderKind::Codewhale),
         Some(codewhale_config::ProviderKind::ModelstudioTokenPlan),
         Some(codewhale_config::ProviderKind::ModelstudioTokenPlanAnthropic),
         Some(codewhale_config::ProviderKind::ModelstudioCodingPlan),
@@ -418,7 +421,7 @@ impl ApiProvider {
     ];
 
     /// `ProviderKind` discriminant → `ApiProvider` lookup.
-    const FROM_KIND_LOOKUP: [Self; 48] = [
+    const FROM_KIND_LOOKUP: [Self; 49] = [
         Self::Deepseek,
         Self::DeepseekAnthropic,
         Self::NvidiaNim,
@@ -466,6 +469,7 @@ impl ApiProvider {
         Self::Google,
         Self::Edenai,
         Self::Concentrate,
+        Self::Codewhale,
         Self::Custom,
     ];
 
@@ -537,6 +541,10 @@ fn subagent_provider_key_matches(key: &str, provider: ApiProvider) -> bool {
         ApiProvider::Concentrate => matches!(
             normalized.as_str(),
             "concentrate" | "concentrate_ai" | "concentrateai"
+        ),
+        ApiProvider::Codewhale => matches!(
+            normalized.as_str(),
+            "codewhale" | "codewhale_api" | "cw_api" | "codewhale_cloud"
         ),
         ApiProvider::OpenaiCodex => matches!(
             normalized.as_str(),
@@ -1697,6 +1705,10 @@ pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'stati
         ApiProvider::Antigravity => Vec::new(),
         ApiProvider::Edenai => vec![DEFAULT_EDENAI_MODEL],
         ApiProvider::Concentrate => vec![DEFAULT_CONCENTRATE_MODEL],
+        // Bootstrap rows only. The account's authenticated `GET /v1/models`
+        // lists exactly the providers this customer connected and replaces
+        // these as soon as it is reachable.
+        ApiProvider::Codewhale => codewhale_config::route::CODEWHALE_FALLBACK_MODELS.to_vec(),
         // Custom endpoints expose no built-in completion names; the user
         // supplies their own model id (#1519).
         ApiProvider::Custom => Vec::new(),
@@ -4069,6 +4081,15 @@ pub struct ProvidersConfig {
         alias = "concentrateai"
     )]
     pub concentrate: ProviderConfig,
+    /// Codewhale API — account-backed model access over connected provider keys.
+    #[serde(
+        default,
+        alias = "codewhale-api",
+        alias = "codewhale_api",
+        alias = "cw-api",
+        alias = "codewhale-cloud"
+    )]
+    pub codewhale: ProviderConfig,
     /// Alibaba Cloud Model Studio — Token Plan (OpenAI-compatible Chat Completions).
     #[serde(default, alias = "modelstudio-token-plan")]
     pub modelstudio_token_plan: ProviderConfig,
@@ -5732,6 +5753,7 @@ impl Config {
             ApiProvider::Telecomjs => &providers.telecomjs,
             ApiProvider::Edenai => &providers.edenai,
             ApiProvider::Concentrate => &providers.concentrate,
+            ApiProvider::Codewhale => &providers.codewhale,
             ApiProvider::ModelstudioTokenPlan => &providers.modelstudio_token_plan,
             ApiProvider::ModelstudioTokenPlanAnthropic => {
                 &providers.modelstudio_token_plan_anthropic
@@ -5816,6 +5838,7 @@ impl Config {
             ApiProvider::Telecomjs => &mut providers.telecomjs,
             ApiProvider::Edenai => &mut providers.edenai,
             ApiProvider::Concentrate => &mut providers.concentrate,
+            ApiProvider::Codewhale => &mut providers.codewhale,
             ApiProvider::ModelstudioTokenPlan => &mut providers.modelstudio_token_plan,
             ApiProvider::ModelstudioTokenPlanAnthropic => {
                 &mut providers.modelstudio_token_plan_anthropic
@@ -6206,6 +6229,7 @@ impl Config {
             ApiProvider::Telecomjs => DEFAULT_TELECOMJS_MODEL,
             ApiProvider::Edenai => DEFAULT_EDENAI_MODEL,
             ApiProvider::Concentrate => DEFAULT_CONCENTRATE_MODEL,
+            ApiProvider::Codewhale => DEFAULT_CODEWHALE_MODEL,
             ApiProvider::ModelstudioTokenPlan
             | ApiProvider::ModelstudioTokenPlanAnthropic
             | ApiProvider::ModelstudioCodingPlan
@@ -6330,6 +6354,7 @@ impl Config {
             | ApiProvider::Telecomjs
             | ApiProvider::Edenai
             | ApiProvider::Concentrate
+            | ApiProvider::Codewhale
             | ApiProvider::ModelstudioTokenPlan
             | ApiProvider::ModelstudioTokenPlanAnthropic
             | ApiProvider::ModelstudioCodingPlan
@@ -6441,6 +6466,7 @@ impl Config {
                         ApiProvider::Telecomjs => DEFAULT_TELECOMJS_BASE_URL,
                         ApiProvider::Edenai => DEFAULT_EDENAI_BASE_URL,
                         ApiProvider::Concentrate => DEFAULT_CONCENTRATE_BASE_URL,
+                        ApiProvider::Codewhale => DEFAULT_CODEWHALE_BASE_URL,
                         ApiProvider::ModelstudioTokenPlan
                         | ApiProvider::ModelstudioTokenPlanAnthropic
                         | ApiProvider::ModelstudioCodingPlan
@@ -8211,6 +8237,7 @@ fn provider_env_base_url_override(provider: ApiProvider) -> Option<String> {
         ApiProvider::Telecomjs => &["TELECOMJS_BASE_URL"],
         ApiProvider::Edenai => &["EDENAI_BASE_URL"],
         ApiProvider::Concentrate => &["CONCENTRATE_BASE_URL"],
+        ApiProvider::Codewhale => &["CODEWHALE_API_BASE"],
         ApiProvider::ModelstudioTokenPlan | ApiProvider::ModelstudioTokenPlanAnthropic => {
             &["MODELSTUDIO_TOKEN_PLAN_BASE_URL"]
         }
@@ -8236,6 +8263,16 @@ fn provider_env_base_url_override(provider: ApiProvider) -> Option<String> {
         | ApiProvider::LongCat
         | ApiProvider::Custom => &[],
     };
+    // `CODEWHALE_API_BASE` carries a `cwc_key_…` bearer, which has no replay
+    // protection, so it is a trust boundary rather than a plain string: an
+    // origin the account surface would refuse is dropped here instead of
+    // becoming a route, and the workspace-wide insecure-HTTP escape hatch
+    // deliberately does not reopen it.
+    if provider == ApiProvider::Codewhale {
+        return first_nonempty_env(names)
+            .as_deref()
+            .and_then(codewhale_config::provider::codewhale_api_base);
+    }
     first_nonempty_env(names)
 }
 
@@ -8590,6 +8627,13 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
                     .providers
                     .get_or_insert_with(ProvidersConfig::default)
                     .concentrate
+                    .base_url = Some(value);
+            }
+            ApiProvider::Codewhale => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .codewhale
                     .base_url = Some(value);
             }
             ApiProvider::ModelstudioTokenPlan => {
@@ -8965,6 +9009,7 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
                 ApiProvider::Telecomjs => &mut providers.telecomjs,
                 ApiProvider::Edenai => &mut providers.edenai,
                 ApiProvider::Concentrate => &mut providers.concentrate,
+                ApiProvider::Codewhale => &mut providers.codewhale,
                 ApiProvider::ModelstudioTokenPlan => &mut providers.modelstudio_token_plan,
                 ApiProvider::ModelstudioTokenPlanAnthropic => {
                     &mut providers.modelstudio_token_plan_anthropic
@@ -9353,6 +9398,7 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
                 ApiProvider::Telecomjs => &mut providers.telecomjs,
                 ApiProvider::Edenai => &mut providers.edenai,
                 ApiProvider::Concentrate => &mut providers.concentrate,
+                ApiProvider::Codewhale => &mut providers.codewhale,
                 ApiProvider::ModelstudioTokenPlan => &mut providers.modelstudio_token_plan,
                 ApiProvider::ModelstudioTokenPlanAnthropic => {
                     &mut providers.modelstudio_token_plan_anthropic
@@ -9696,6 +9742,9 @@ pub(crate) fn provider_passes_model_through(provider: ApiProvider) -> bool {
             // Concentrate ids are gateway-owned (plain, `provider/model`, or the
             // gateway's own `auto`); the resolver strips only `concentrate/`.
             | ApiProvider::Concentrate
+            // Codewhale API ids are `provider/model` exactly as the account
+            // catalog returns them; never normalize or rewrite them.
+            | ApiProvider::Codewhale
             | ApiProvider::ModelstudioTokenPlan
             | ApiProvider::ModelstudioTokenPlanAnthropic
             | ApiProvider::ModelstudioCodingPlan
@@ -10909,6 +10958,7 @@ fn merge_providers(
             telecomjs: merge_provider_config(base.telecomjs, override_cfg.telecomjs),
             edenai: merge_provider_config(base.edenai, override_cfg.edenai),
             concentrate: merge_provider_config(base.concentrate, override_cfg.concentrate),
+            codewhale: merge_provider_config(base.codewhale, override_cfg.codewhale),
             modelstudio_token_plan: merge_provider_config(
                 base.modelstudio_token_plan,
                 override_cfg.modelstudio_token_plan,

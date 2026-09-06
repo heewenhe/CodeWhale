@@ -67,6 +67,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `workers`, `help`); every other verb stays dispatchable and is documented
   under explicit groups in `/fleet help`. The roster no longer shows the
   untouched built-in `general` alias next to `worker` (#5888).
+- `codewhale` provider: account-backed model access over the provider keys a
+  customer connected to their Codewhale account. One base URL
+  (`https://api.codewhale.net/v1`, overridable with `CODEWHALE_API_BASE`;
+  HTTPS required except on loopback), one `cwc_key_…` account API key with the
+  `models:infer` scope (`CODEWHALE_API_KEY`), and a per-model wire chosen from
+  the account's authenticated `GET /v1/models`: ids are `provider/model` and
+  each row states `chat-completions` (`/v1/chat/completions`) or
+  `anthropic-messages` (`/v1/messages`). Both protocols authenticate with
+  `Authorization: Bearer`, never `x-api-key`. If the catalog cannot be fetched
+  the route falls back to three bootstrap ids and says so.
+- `codewhale account api-keys create --scope` now accepts `models:infer`
+  alongside `account:read` and `agent:run`, and an omitted `--scope` sends all
+  three explicitly. `--use` saves the new secret as this machine's local
+  `codewhale` provider credential in the same secret store `codewhale auth`
+  uses; nothing is uploaded.
 - `sandbox_backend = "shannon"`: shell commands run as signed ShannonNet
   capability invocations (`cap://sandbox/exec`) on a worker that may live on
   another tailnet node. Codewhale opens a Task World per session for its
@@ -90,6 +105,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-World session container before each command — full tree first, then
   only changes and deletions — so remote builds and tests run on the files
   just edited locally and their outputs persist across commands.
+
+### Changed
+
+- `codewhale account keys set|remove|list` no longer carry a hardcoded
+  eight-provider list. Provider ids come from the control plane's public
+  catalog (`GET /api/model-providers`), are validated locally against
+  `^[a-z0-9][a-z0-9-]{0,63}$` before they reach a URL path, and `list` shows
+  every catalog provider with its label and stored-key state. `--from-local`
+  maps a catalog row onto the local runtime provider through the catalog's own
+  `runtimeProvider` field, so a newly supported provider needs no CLI release.
 
 ## [0.9.12] - 2026-09-03
 

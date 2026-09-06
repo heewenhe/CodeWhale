@@ -206,6 +206,12 @@ pub(crate) const DEFAULT_EDENAI_BASE_URL: &str = "https://api.edenai.run/v3";
 // `provider/model` pins a provider and `concentrate/auto` is the gateway router.
 pub(crate) const DEFAULT_CONCENTRATE_MODEL: &str = "deepseek-v4-pro";
 pub(crate) const DEFAULT_CONCENTRATE_BASE_URL: &str = "https://api.concentrate.ai/v1";
+// Codewhale API (account-backed model access) defaults. The account control
+// plane serves an OpenAI-shaped `GET /v1/models` whose rows carry the wire
+// protocol per model, so this route is model-aware and its catalog is the
+// account's own connected providers. The default is a bootstrap hint only.
+pub(crate) const DEFAULT_CODEWHALE_MODEL: &str = "deepseek/deepseek-v4-pro";
+pub(crate) const DEFAULT_CODEWHALE_BASE_URL: &str = "https://api.codewhale.net/v1";
 // Alibaba Cloud Model Studio (DashScope) defaults
 // Token Plan (Personal / Team): shared endpoint, OpenAI + Anthropic dialects
 pub(crate) const DEFAULT_MODELSTUDIO_TOKEN_PLAN_MODEL: &str = "qwen3.8-max";

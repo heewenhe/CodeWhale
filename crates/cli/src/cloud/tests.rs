@@ -69,6 +69,46 @@ fn account(id: &str) -> serde_json::Value {
     })
 }
 
+/// A stand-in for `GET /api/model-providers`.
+///
+/// Deliberately includes ids the retired hardcoded enum never knew
+/// (`modelstudio-coding-plan`) so a test failure means the CLI went back to a
+/// compiled provider list.
+fn catalog() -> serde_json::Value {
+    json!({
+        "providers": [
+            {
+                "id": "openai",
+                "label": "OpenAI",
+                "runtimeProvider": "openai",
+                "availability": "account_key",
+                "connectionAvailable": true
+            },
+            {
+                "id": "anthropic",
+                "label": "Anthropic",
+                "runtimeProvider": "anthropic",
+                "availability": "account_key",
+                "connectionAvailable": true
+            },
+            {
+                "id": "xiaomi",
+                "label": "Xiaomi MiMo",
+                "runtimeProvider": "xiaomi-mimo",
+                "availability": "account_key",
+                "connectionAvailable": true
+            },
+            {
+                "id": "modelstudio-coding-plan",
+                "label": "Alibaba Model Studio Coding Plan",
+                "runtimeProvider": "modelstudio-coding-plan",
+                "availability": "account_key",
+                "connectionAvailable": true
+            }
+        ]
+    })
+}
+
 fn auth(access: &str, refresh: &str, account_id: &str) -> AuthBundle {
     AuthBundle {
         token_type: "Bearer".to_string(),
@@ -135,10 +175,23 @@ fn parses_cloud_command_matrix_and_rejects_inline_keys() {
         ]),
         CloudCommand::Keys(CloudKeysArgs {
             command: CloudKeysCommand::Set(CloudKeySetArgs {
-                provider: CloudProvider::Xiaomi,
                 from_local: true,
                 ..
             })
+        })
+    ));
+    // Provider ids are open strings validated against the account's catalog,
+    // not a compiled enum: clap must not reject an id this CLI never heard of.
+    assert!(matches!(
+        command(&[
+            "codewhale",
+            "cloud",
+            "keys",
+            "set",
+            "modelstudio-coding-plan"
+        ]),
+        CloudCommand::Keys(CloudKeysArgs {
+            command: CloudKeysCommand::Set(CloudKeySetArgs { .. })
         })
     ));
     assert!(
@@ -723,10 +776,16 @@ fn set_list_and_remove_use_account_routes_without_secret_output() {
         }
     });
     let transport = FakeTransport::new(vec![
+        // set: /api/me, catalog, PUT
         response(200, account("acct-keys")),
+        response(200, catalog()),
         response(200, json!({ "ok": true })),
+        // list: /api/me, catalog
         response(200, list_account),
+        response(200, catalog()),
+        // remove: /api/me, catalog, DELETE
         response(200, account("acct-keys")),
+        response(200, catalog()),
         response(204, json!(null)),
     ]);
     CloudClient::new(&transport, &secrets, "default", "https://api.codewhale.net")
@@ -768,6 +827,9 @@ fn set_list_and_remove_use_account_routes_without_secret_output() {
     }
     let output = String::from_utf8(output).unwrap();
     assert!(output.contains("openai: set"));
+    // Every catalog provider is listed, including ids the retired enum lacked.
+    assert!(output.contains("modelstudio-coding-plan: not set"));
+    assert!(output.contains("Alibaba Model Studio Coding Plan"));
     assert!(!output.contains("Laptop"));
     assert!(output.contains("Codewhale account acct-keys"));
     assert!(!output.contains("sk-provider-never-print"));
@@ -798,6 +860,7 @@ fn from_local_uses_config_without_printing_or_requiring_an_inline_key() {
     let (secrets, _) = test_secrets();
     let transport = FakeTransport::new(vec![
         response(200, account("acct-local")),
+        response(200, catalog()),
         response(200, json!({ "ok": true })),
     ]);
     CloudClient::new(&transport, &secrets, "work", "https://api.codewhale.net")
@@ -841,6 +904,123 @@ fn from_local_uses_config_without_printing_or_requiring_an_inline_key() {
 }
 
 #[test]
+fn catalog_ids_map_to_local_providers_through_the_catalog_not_a_compiled_table() {
+    // `xiaomi` is the control plane's route id; `xiaomi-mimo` is the runtime's.
+    // The catalog states that mapping, so `--from-local` must read it from the
+    // response rather than from a compiled slug table.
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("config.toml");
+    let mut config = ConfigStore::load(Some(path)).unwrap();
+    config.config.providers.xiaomi_mimo.api_key = Some("sk-mimo-local".to_string());
+    let (secrets, _) = test_secrets();
+    let transport = FakeTransport::new(vec![
+        response(200, account("acct-map")),
+        response(200, catalog()),
+        response(200, json!({ "ok": true })),
+    ]);
+    CloudClient::new(&transport, &secrets, "default", "https://api.codewhale.net")
+        .save_auth(auth("access", "refresh", "acct-map"))
+        .unwrap();
+    let mut output = Vec::new();
+    let mut key_reader = |_| bail!("from-local must not prompt");
+    let mut opener = |_| true;
+    let mut sleeper = |_| {};
+    run_with(
+        command(&[
+            "codewhale",
+            "cloud",
+            "keys",
+            "set",
+            "xiaomi",
+            "--from-local",
+        ]),
+        "default",
+        "https://api.codewhale.net",
+        &config,
+        &secrets,
+        &secrets,
+        &machine::MachineKeyEnv::default(),
+        &transport,
+        &mut output,
+        &mut key_reader,
+        &mut opener,
+        &mut sleeper,
+    )
+    .unwrap();
+    let output = String::from_utf8(output).unwrap();
+    assert!(!output.contains("sk-mimo-local"), "{output}");
+    let requests = transport.requests();
+    let put = requests
+        .iter()
+        .find(|request| request.method == HttpMethod::Put)
+        .expect("a PUT to the catalog route id");
+    assert_eq!(put.path, "/api/model-keys/xiaomi");
+    assert!(String::from_utf8_lossy(put.body.as_ref().unwrap()).contains("sk-mimo-local"));
+}
+
+#[test]
+fn an_id_outside_the_account_catalog_is_refused_and_names_what_is_available() {
+    let (temp, config) = test_config();
+    let _keep_temp = temp;
+    let (secrets, _) = test_secrets();
+    let transport = FakeTransport::new(vec![
+        response(200, account("acct-unknown")),
+        response(200, catalog()),
+    ]);
+    CloudClient::new(&transport, &secrets, "default", "https://api.codewhale.net")
+        .save_auth(auth("access", "refresh", "acct-unknown"))
+        .unwrap();
+    let mut output = Vec::new();
+    let mut key_reader = |_| bail!("an unknown provider must not prompt for a key");
+    let mut opener = |_| true;
+    let mut sleeper = |_| {};
+    let error = run_with(
+        command(&["codewhale", "cloud", "keys", "remove", "not-a-provider"]),
+        "default",
+        "https://api.codewhale.net",
+        &config,
+        &secrets,
+        &secrets,
+        &machine::MachineKeyEnv::default(),
+        &transport,
+        &mut output,
+        &mut key_reader,
+        &mut opener,
+        &mut sleeper,
+    )
+    .expect_err("an id the account cannot connect must fail");
+    let text = error.to_string();
+    assert!(text.contains("modelstudio-coding-plan"), "{text}");
+    assert!(
+        !transport
+            .requests()
+            .iter()
+            .any(|request| request.method == HttpMethod::Delete),
+        "an unknown id must never reach a mutating route"
+    );
+}
+
+#[test]
+fn provider_ids_are_validated_before_they_can_reach_a_url_path() {
+    validate_provider_id("modelstudio-coding-plan").unwrap();
+    validate_provider_id("  deepseek  ").unwrap();
+    for bad in [
+        "",
+        "-leading",
+        "Upper",
+        "has_underscore",
+        "../escape",
+        "with/slash",
+        &"a".repeat(65),
+    ] {
+        assert!(
+            validate_provider_id(bad).is_err(),
+            "{bad:?} must be refused"
+        );
+    }
+}
+
+#[test]
 fn from_local_uses_config_before_the_provider_secret_store() {
     let (temp, mut config) = test_config();
     let _keep_temp = temp;
@@ -848,14 +1028,14 @@ fn from_local_uses_config_before_the_provider_secret_store() {
     store.set("openai", "sk-secret-store").unwrap();
 
     assert_eq!(
-        resolve_local_key(&config, &secrets, CloudProvider::Openai)
+        resolve_local_key(&config, &secrets, ProviderKind::Openai)
             .unwrap()
             .as_deref(),
         Some("sk-secret-store")
     );
     config.config.providers.openai.api_key = Some("sk-config-first".to_string());
     assert_eq!(
-        resolve_local_key(&config, &secrets, CloudProvider::Openai)
+        resolve_local_key(&config, &secrets, ProviderKind::Openai)
             .unwrap()
             .as_deref(),
         Some("sk-config-first")
@@ -1196,6 +1376,58 @@ fn managing_keys_with_only_a_machine_key_is_refused_before_anything_is_sent() {
 }
 
 #[test]
+fn create_use_saves_the_key_only_in_the_local_codewhale_slot() {
+    let (secrets, keyring) = test_secrets();
+    let transport = FakeTransport::new(vec![response(
+        201,
+        json!({
+            "apiKey": { "id": "3f2a9c1e4b7d8a0f5c6e2b91", "name": "laptop",
+                        "displayPrefix": "cwc_key_3f2a9c1e4b7d8a0f5c6e2b91",
+                        "scopes": ["account:read", "agent:run", "models:infer"],
+                        "createdAt": "2026-01-01T00:00:00Z", "expiresAt": null },
+            "secret": MACHINE_TOKEN
+        }),
+    )]);
+    CloudClient::new(&transport, &secrets, "default", "https://api.codewhale.net")
+        .save_auth(auth("access-secret", "refresh-secret", "acct-human"))
+        .unwrap();
+    let (result, output) = run_account(
+        &[
+            "codewhale",
+            "account",
+            "api-keys",
+            "create",
+            "--name",
+            "laptop",
+            "--scope",
+            "models:infer",
+            "--use",
+        ],
+        &machine::MachineKeyEnv::default(),
+        &secrets,
+        &transport,
+    );
+    result.unwrap();
+    // The secret is still printed exactly once, and the local save is stated.
+    assert_eq!(output.matches(MACHINE_TOKEN).count(), 1, "{output}");
+    assert!(
+        output.contains("local `codewhale` provider credential"),
+        "{output}"
+    );
+    assert_eq!(
+        keyring.get("codewhale").unwrap().as_deref(),
+        Some(MACHINE_TOKEN),
+        "--use must write the codewhale provider slot"
+    );
+    // Only one request: --use is a local write, never an upload.
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value =
+        serde_json::from_slice(requests[0].body.as_ref().unwrap()).unwrap();
+    assert_eq!(body["scopes"], json!(["models:infer"]), "{body}");
+}
+
+#[test]
 fn creating_a_key_prints_the_secret_exactly_once_and_saves_it_nowhere() {
     let (secrets, keyring) = test_secrets();
     let transport = FakeTransport::new(vec![response(
@@ -1240,8 +1472,13 @@ fn creating_a_key_prints_the_secret_exactly_once_and_saves_it_nowhere() {
         serde_json::from_slice(requests[0].body.as_ref().unwrap()).unwrap();
     assert_eq!(body["name"], "github-actions");
     assert_eq!(body["expiresInDays"], 90);
-    // Scopes omitted means "both"; sending an empty array would mean nothing.
-    assert!(body.get("scopes").is_none(), "{body}");
+    // Scopes omitted means every scope, stated explicitly so a key carries
+    // exactly what this CLI's help promised.
+    assert_eq!(
+        body["scopes"],
+        json!(["account:read", "agent:run", "models:infer"]),
+        "{body}"
+    );
 
     // The plaintext exists in one response and nowhere else, ever: creating a
     // key must not write it into the session record on its way past.

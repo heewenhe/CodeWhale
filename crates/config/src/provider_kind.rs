@@ -233,6 +233,22 @@ pub enum ProviderKind {
         alias = "concentrateai"
     )]
     Concentrate,
+    /// Codewhale API — account-backed model access over the customer's own
+    /// connected provider keys.
+    ///
+    /// One base URL, one `cwc_key_…` account API key with the `models:infer`
+    /// scope, and a per-model wire chosen from the account's live catalog:
+    /// `GET /v1/models` returns `provider/model` rows carrying
+    /// `codewhale.protocol` (`chat-completions` or `anthropic-messages`).
+    /// Both protocols authenticate with `Authorization: Bearer` — the
+    /// Anthropic passthrough does **not** take `x-api-key`.
+    #[serde(
+        alias = "codewhale-api",
+        alias = "codewhale_api",
+        alias = "cw-api",
+        alias = "codewhale-cloud"
+    )]
+    Codewhale,
     /// User-defined OpenAI-compatible endpoint (#1519).
     ///
     /// A single dynamic identity for arbitrary `[providers.<name>]
@@ -250,7 +266,7 @@ impl ProviderKind {
     /// stay on the enum for serde and `provider_for_kind`, but they are not
     /// first-class catalog rows. Plan is `mode` / base_url; dialect is
     /// `wire = openai|anthropic` on the primary provider config.
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 43] = [
         Self::Deepseek,
         Self::NvidiaNim,
         Self::Openai,
@@ -292,6 +308,7 @@ impl ProviderKind {
         Self::Google,
         Self::Edenai,
         Self::Concentrate,
+        Self::Codewhale,
         Self::Custom,
     ];
 
