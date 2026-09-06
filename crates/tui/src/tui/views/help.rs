@@ -96,6 +96,11 @@ struct HelpEntry {
     sub_rank: u8,
     label: String,
     description: String,
+    /// The command's argument shape, when it has one worth stating — the
+    /// registry `usage` string for built-ins, the front-matter usage for
+    /// workspace commands. `None` for rows that are already the whole shape
+    /// (`/copy`, `$skill`, a keybinding chord).
+    usage: Option<String>,
     /// Lowercased haystack used for substring matching; pre-built so each
     /// keystroke does not re-allocate per entry.
     haystack: String,
@@ -372,14 +377,17 @@ impl HelpView {
         widths
     }
 
-    /// Description of the focused entry when the row itself could not hold
-    /// it, at the full width of the panel.
+    /// What the focused row could not say for itself: the command's argument
+    /// shape, and its description when the row had to shed one.
     ///
-    /// This slot exists to repair a shed, not to repeat one. On a wide
-    /// terminal the inline description already fits, and printing it again
-    /// two rows above would be the same duplication the footer was carrying
-    /// with `type to filter`. The row stays reserved either way so the list
-    /// does not jump as focus moves between shed and unshed rows.
+    /// `/help` used to show `label + description` and keep `usage` in the
+    /// search haystack alone, so `/workspace [path|worktrees]` read as
+    /// `/workspace` and the worktree manager behind it was invisible (#5952).
+    /// The usage line is new information, so it is printed whenever the
+    /// registry has one; the description is only repeated when the row shed
+    /// it, because printing the same sentence twice on one screen is the
+    /// duplication this slot was built to avoid. The row stays reserved
+    /// either way so the list does not jump as focus moves.
     fn focused_entry_detail(
         &self,
         inner_width: usize,
@@ -398,7 +406,20 @@ impl HelpView {
         let inline_capacity = inner_width.saturating_sub(label_width + 4);
         let inline = shed_to_width(&entry.description, inline_capacity);
         let full = shed_to_width(&entry.description, inner_width);
-        (full != inline && !full.is_empty()).then(|| full.to_string())
+        let repaired = (full != inline && !full.is_empty()).then(|| full.to_string());
+        match (entry.usage.as_deref(), repaired) {
+            (None, repaired) => repaired,
+            (Some(usage), None) => Some(shed_to_width(usage, inner_width).to_string()),
+            (Some(usage), Some(description)) => {
+                // They join at a joint `shed_to_width` already sheds on, and
+                // the description leads: repairing the shed is what this slot
+                // was built for, and a panel too narrow to hold both must not
+                // spend itself on the argument shape and drop the sentence
+                // the row could not print.
+                let joined = format!("{description} — {usage}");
+                Some(shed_to_width(&joined, inner_width).to_string())
+            }
+        }
     }
 
     fn focusable_rows(&self) -> Vec<HelpHit> {
@@ -506,6 +527,7 @@ fn build_entries(
             // Commands have no inherent ordering — fall back to alphabetical
             // by leaning on `label.clone()` in the final sort_by_key tuple.
             sub_rank: 0,
+            usage: stated_usage(command.usage, &label),
             label,
             description,
             haystack,
@@ -538,6 +560,7 @@ fn build_entries(
         entries.push(HelpEntry {
             section: HelpSection::UserCommand,
             sub_rank: 0,
+            usage: stated_usage(&usage, &label),
             label,
             description,
             haystack,
@@ -558,6 +581,7 @@ fn build_entries(
         entries.push(HelpEntry {
             section: HelpSection::Skill,
             sub_rank: 0,
+            usage: None,
             label,
             description,
             haystack,
@@ -585,6 +609,7 @@ fn build_entries(
         entries.push(HelpEntry {
             section: HelpSection::Keybinding,
             sub_rank: binding.section.rank(),
+            usage: None,
             label,
             description,
             haystack,
@@ -592,6 +617,25 @@ fn build_entries(
     }
 
     entries
+}
+
+/// The usage line worth printing beside a row, or `None` when it only
+/// restates the label.
+///
+/// `/copy`'s usage is `/copy`; showing it teaches nothing and costs the row
+/// that `/queue [list|send <n>|…]` needs. Workspace commands declare the
+/// argument shape alone (`<environment>`), so the label is prepended to make
+/// the same whole line a built-in already carries.
+fn stated_usage(usage: &str, label: &str) -> Option<String> {
+    let usage = usage.trim();
+    if usage.is_empty() || usage == label {
+        return None;
+    }
+    Some(if usage.starts_with('/') {
+        usage.to_string()
+    } else {
+        format!("{label} {usage}")
+    })
 }
 
 fn group_key(entry: &HelpEntry) -> String {
@@ -710,11 +754,14 @@ fn shed_to_width(text: &str, max_width: usize) -> Cow<'_, str> {
             if width > best.width() {
                 best = head;
             }
-        } else if width > oversize_clause.width() {
+        } else if oversize_clause.is_empty() {
             // The main clause was one column over, so the joint itself did
             // not fire. Word-shed that clause rather than the alias list
             // hanging off it — otherwise `/automation` keeps the adjectives
-            // and loses `automations`.
+            // and loses `automations`. Heads grow left to right, so the first
+            // oversize one is the main clause; a later, wider head is that
+            // clause plus everything trailing it, which is the text this
+            // branch exists to shed.
             oversize_clause = head;
         }
     }
@@ -1670,8 +1717,8 @@ mod tests {
     }
 
     /// The detail row repairs a shed; it never repeats one. On a wide terminal
-    /// the inline description already fits, so the slot stays empty rather
-    /// than printing the same sentence twice on one screen.
+    /// the inline description already fits, so the slot carries the usage
+    /// line alone rather than printing the same sentence twice on one screen.
     #[test]
     fn the_detail_row_repairs_a_shed_and_never_repeats_one() {
         let mut view = HelpView::new();
@@ -1726,6 +1773,103 @@ mod tests {
             detail.len() > inline_description.len(),
             "the detail row must carry more than the row could: {inline_description:?} / {detail:?}"
         );
+    }
+
+    /// #5952: the usage string lived in the search haystack alone, so
+    /// `/workspace [path|worktrees]` rendered as `/workspace` and the
+    /// worktree manager behind it had no way of being seen.
+    #[test]
+    fn the_focused_command_states_its_usage() {
+        let mut view = HelpView::new();
+        let slot = view
+            .filtered
+            .iter()
+            .position(|idx| view.entries[*idx].label == "/workspace")
+            .expect("/workspace is a registered command");
+        view.set_focus(HelpHit::Entry(slot));
+
+        let rows = rows_at(&view, 140, 24);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("/workspace [path|worktrees]")),
+            "the usage line must be on screen: {rows:#?}"
+        );
+    }
+
+    /// A row whose usage only restates its label spends no columns saying so.
+    #[test]
+    fn a_command_without_arguments_states_no_usage() {
+        let view = HelpView::new();
+        let entry = view
+            .entries
+            .iter()
+            .find(|entry| entry.label == "/copy")
+            .expect("/copy is a registered command");
+        assert_eq!(entry.usage, None);
+
+        let workspace = view
+            .entries
+            .iter()
+            .find(|entry| entry.label == "/workspace")
+            .expect("/workspace is a registered command");
+        assert_eq!(
+            workspace.usage.as_deref(),
+            Some("/workspace [path|worktrees]")
+        );
+    }
+
+    /// At 60 columns the detail slot cannot hold both, and the description it
+    /// exists to repair wins — the usage sheds at its own joint rather than
+    /// pushing the sentence off the panel.
+    #[test]
+    fn a_narrow_panel_keeps_the_repaired_description_over_the_usage() {
+        let mut view = HelpView::new();
+        let slot = view
+            .filtered
+            .iter()
+            .position(|idx| view.entries[*idx].label == "/advisor")
+            .expect("/advisor is a registered command");
+        view.set_focus(HelpHit::Entry(slot));
+        let description = view.entries[view.filtered[slot]].description.clone();
+
+        let narrow = rows_at(&view, 60, 20);
+        let detail_row = narrow
+            .iter()
+            .position(|row| row.contains("Type to filter"))
+            .expect("filter row")
+            + 1;
+        let detail = narrow
+            .get(detail_row)
+            .expect("detail row")
+            .trim_end_matches(['█', '│', '┃', ' '])
+            .trim()
+            .to_string();
+        assert!(
+            description.starts_with(&detail) && !detail.is_empty(),
+            "the narrow detail row must still be the description: {detail:?}"
+        );
+    }
+
+    /// Workspace commands declare their own usage in front matter; the row
+    /// reads it from the same place the built-ins read theirs.
+    #[test]
+    fn a_workspace_command_states_its_declared_usage() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let commands_dir = tmp.path().join(".codewhale").join("commands");
+        std::fs::create_dir_all(&commands_dir).unwrap();
+        std::fs::write(
+            commands_dir.join("shipit.md"),
+            "---\ndescription: Ship the branch\nargument-hint: <environment>\n---\nbody",
+        )
+        .unwrap();
+
+        let view = HelpView::new_for_workspace(Locale::En, tmp.path(), &[]);
+        let entry = view
+            .entries
+            .iter()
+            .find(|entry| entry.label == "/shipit")
+            .expect("workspace command row");
+        assert_eq!(entry.usage.as_deref(), Some("/shipit <environment>"));
     }
 
     #[test]

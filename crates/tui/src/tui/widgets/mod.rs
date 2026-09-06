@@ -3697,6 +3697,71 @@ pub(crate) fn slash_completion_hints(
     )
 }
 
+/// Slash-menu rows for `/<command> ` and `/<command> <partial>`.
+///
+/// Once the name is typed the menu used to go blank, so `/workspace
+/// worktrees` — the only route to the git worktree manager — was unfindable
+/// without already knowing it (#5952). The rows come from the registry's own
+/// `usage` string: the usage line itself as the head row, then the literal
+/// subcommands that line declares, filtered by what has been typed. There is
+/// no second place argument documentation is written down.
+fn command_argument_hints(trimmed_input: &str, limit: usize) -> Vec<SlashMenuEntry> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let Some((command_token, rest)) = trimmed_input
+        .trim_start_matches('/')
+        .split_once(char::is_whitespace)
+    else {
+        return Vec::new();
+    };
+    let Some(info) = commands::get_command_info(command_token) else {
+        return Vec::new();
+    };
+    if !info.show_in_slash_completion(command_token) {
+        return Vec::new();
+    }
+    // Only the first argument word is a subcommand. Once a second word is
+    // being typed the usage line has nothing left to offer, so the menu gets
+    // out of the way exactly as it does today.
+    let arg_prefix = rest.trim_start();
+    if arg_prefix.contains(char::is_whitespace) {
+        return Vec::new();
+    }
+    let arg_prefix_lower = arg_prefix.to_ascii_lowercase();
+
+    let canonical = format!("/{}", info.name);
+    let mut entries: Vec<SlashMenuEntry> = Vec::new();
+    // The head row states what the command accepts. Its name is the command
+    // itself, so selecting it re-inserts what is already typed — the row can
+    // be arrowed through without losing the argument being written. It is
+    // dropped once filtering starts so Tab still completes a single match.
+    if arg_prefix.is_empty() && info.usage != canonical {
+        entries.push(SlashMenuEntry {
+            name: canonical.clone(),
+            description: info.usage.to_string(),
+            is_skill: false,
+            alias_hint: None,
+        });
+    }
+    for subcommand in info.subcommands() {
+        if !subcommand.starts_with(&arg_prefix_lower) {
+            continue;
+        }
+        entries.push(SlashMenuEntry {
+            name: format!("{canonical} {subcommand}"),
+            // The subcommand is the whole row: the command's own description
+            // is already one row up on the head row, and repeating it beside
+            // every verb would say the same sentence a dozen times.
+            description: String::new(),
+            is_skill: false,
+            alias_hint: None,
+        });
+    }
+    entries.truncate(limit);
+    entries
+}
+
 pub(crate) fn slash_completion_hints_with_model_candidates(
     input: &str,
     limit: usize,
@@ -3740,7 +3805,7 @@ pub(crate) fn slash_completion_hints_with_model_candidates(
         && completing_skill_arg.is_none()
         && completing_model_arg.is_none()
     {
-        return Vec::new();
+        return command_argument_hints(trimmed, limit);
     }
     let mut entries: Vec<SlashMenuEntry> = Vec::new();
     let prefix_lower = prefix.to_ascii_lowercase();
@@ -5579,6 +5644,126 @@ mod tests {
             .expect("custom command should be present");
 
         assert_eq!(entry.description, "Deploy target  <environment>");
+    }
+
+    /// #5952: `/workspace worktrees` is the only route to the git worktree
+    /// manager, and the menu went blank the moment the space was typed.
+    #[test]
+    fn typing_a_command_and_a_space_states_its_usage_and_lists_its_subcommands() {
+        let hints = slash_completion_hints(
+            "/workspace ",
+            128,
+            &[],
+            Locale::En,
+            None,
+            ApiProvider::Deepseek,
+        );
+
+        let head = hints.first().expect("usage row");
+        assert_eq!(head.name, "/workspace");
+        assert_eq!(head.description, "/workspace [path|worktrees]");
+        assert!(
+            hints.iter().any(|hint| hint.name == "/workspace worktrees"),
+            "worktrees must be offered as a subcommand candidate: {:?}",
+            hints.iter().map(|h| h.name.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    /// An alias reaches the same usage line as the canonical name, and the
+    /// rows it offers are still spelled with the canonical name.
+    #[test]
+    fn a_command_alias_states_the_canonical_usage() {
+        let hints =
+            slash_completion_hints("/cwd ", 128, &[], Locale::En, None, ApiProvider::Deepseek);
+        assert_eq!(hints[0].name, "/workspace");
+        assert_eq!(hints[0].description, "/workspace [path|worktrees]");
+    }
+
+    /// Once filtering starts the usage row steps aside so a single remaining
+    /// verb is unambiguous — that is what lets Tab complete it.
+    #[test]
+    fn a_partial_subcommand_filters_to_the_verbs_that_match() {
+        let hints = slash_completion_hints(
+            "/workspace wor",
+            128,
+            &[],
+            Locale::En,
+            None,
+            ApiProvider::Deepseek,
+        );
+        assert_eq!(
+            hints
+                .iter()
+                .map(|hint| hint.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/workspace worktrees"]
+        );
+
+        let none = slash_completion_hints(
+            "/workspace zzz",
+            128,
+            &[],
+            Locale::En,
+            None,
+            ApiProvider::Deepseek,
+        );
+        assert!(
+            none.is_empty(),
+            "{:?}",
+            none.iter()
+                .map(|hint| hint.name.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_command_that_takes_no_arguments_still_closes_the_menu() {
+        let hints =
+            slash_completion_hints("/copy ", 128, &[], Locale::En, None, ApiProvider::Deepseek);
+        assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn a_second_argument_word_and_an_unknown_command_offer_nothing() {
+        assert!(
+            slash_completion_hints(
+                "/workspace worktrees ",
+                128,
+                &[],
+                Locale::En,
+                None,
+                ApiProvider::Deepseek,
+            )
+            .is_empty()
+        );
+        assert!(
+            slash_completion_hints(
+                "/nosuchcommand ",
+                128,
+                &[],
+                Locale::En,
+                None,
+                ApiProvider::Deepseek,
+            )
+            .is_empty()
+        );
+    }
+
+    /// `/skill ` and `/model ` own their argument menus; the usage rows must
+    /// not displace them.
+    #[test]
+    fn argument_menus_that_already_exist_keep_their_rows() {
+        let skills = vec![("codereview".to_string(), "Review a diff".to_string())];
+        let hints = slash_completion_hints(
+            "/skill ",
+            128,
+            &skills,
+            Locale::En,
+            None,
+            ApiProvider::Deepseek,
+        );
+        assert!(hints.iter().any(|hint| hint.name == "/skill codereview"));
+        assert!(hints.iter().all(|hint| hint.name != "/skill"));
     }
 
     #[test]

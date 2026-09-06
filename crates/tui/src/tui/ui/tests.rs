@@ -14256,6 +14256,56 @@ fn visible_slash_model_completions_are_provider_scoped() {
     );
 }
 
+/// #5952: the menu went blank at `/workspace `, so the git worktree manager
+/// it fronts could only be reached by someone who already knew the verb.
+#[test]
+fn slash_menu_offers_subcommands_once_the_command_is_typed() {
+    let mut app = create_test_app();
+    app.input = "/workspace ".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    let entries = visible_slash_menu_entries(&app, SLASH_MENU_LIMIT);
+    let names = entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"/workspace worktrees"), "{names:?}");
+    assert_eq!(
+        entries
+            .iter()
+            .find(|entry| entry.name == "/workspace")
+            .map(|entry| entry.description.as_str()),
+        Some("/workspace [path|worktrees]"),
+        "the usage line must head the menu: {names:?}"
+    );
+}
+
+/// Selecting a subcommand row finishes the command instead of restarting it.
+#[test]
+fn selecting_a_subcommand_row_completes_the_command() {
+    let mut app = create_test_app();
+    app.input = "/workspace wor".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    let entries = visible_slash_menu_entries(&app, SLASH_MENU_LIMIT);
+    app.slash_menu_selected = 0;
+    assert!(apply_slash_menu_selection(&mut app, &entries, true));
+    assert_eq!(app.input, "/workspace worktrees");
+    assert_eq!(app.cursor_position, app.input.chars().count());
+}
+
+/// Tab completes a single matching subcommand the same way it completes a
+/// single matching command name.
+#[test]
+fn tab_completes_an_unambiguous_subcommand() {
+    let mut app = create_test_app();
+    app.input = "/workspace wor".to_string();
+    app.cursor_position = app.input.chars().count();
+
+    assert!(try_autocomplete_slash_command(&mut app));
+    assert_eq!(app.input.trim_end(), "/workspace worktrees");
+}
+
 #[test]
 fn slash_menu_up_wraps_from_first_to_last() {
     let mut app = create_test_app();
