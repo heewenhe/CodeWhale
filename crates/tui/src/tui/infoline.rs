@@ -23,11 +23,18 @@
 //! blank between turns once a turn has reported them.
 //!
 //! The context reading is painted here and only here — the posture bar above
-//! used to print the same percentage a second time from the same snapshot.
+//! used to print the same percentage a second time from the same snapshot —
+//! and at every fullness, not only from 50% up (#5950).
 //!
 //! Shed order as width drops: `tok/s`, `ttft`, `↓ tokens`, the help hint,
-//! then the cost ([`InfoSegmentId::shed_priority`]). The model and `ctx NN%`
-//! never shed; below that floor the row clips at its right edge.
+//! then the cost, then the balance ([`InfoSegmentId::shed_priority`]). The
+//! model and `ctx NN%` never shed; below that floor the row clips at its
+//! right edge.
+//!
+//! Which segments exist at all is the user's call: `/statusline` and
+//! `tui.status_items` compose the row, and [`crate::tui::ui::frame::info_segments`]
+//! builds only the ones that are on. Shedding decides what survives the
+//! width that is left.
 //!
 //! Interaction: segment geometry is recorded for parity tests, but only the
 //! model/route segment and the context reading advertise an action in the
@@ -74,6 +81,10 @@ pub enum InfoSegmentId {
     Rate,
     /// Prompt cache hit percent (`cache 85%`).
     Cache,
+    /// Prepaid credit left on the active route (`balance $4.32`). Opt-in:
+    /// only painted when `/statusline` has the balance item on, which is
+    /// also what authorises the fetch behind it.
+    Balance,
 }
 
 impl InfoSegmentId {
@@ -89,6 +100,9 @@ impl InfoSegmentId {
             Self::Ttft => 8,
             Self::OutputTokens => 7,
             Self::Cost => 6,
+            // The balance outlives the cost: it is off by default, so a row
+            // that shows one is a row whose owner asked for it by name.
+            Self::Balance => 5,
             Self::Model | Self::Context => 0,
         }
     }

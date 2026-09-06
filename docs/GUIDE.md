@@ -220,26 +220,31 @@ The interactive TUI has a few stable regions:
 - Status and footer areas: live activity, queued follow-ups, and short command
   hints.
 
-The footer status line is configurable. Run `/statusline` to choose which
-footer chips are visible, or set `[tui].status_items` in `config.toml` to
-control both selection and order. Supported keys currently include `mode`,
-`model`, `cost`, `balance` (DeepSeek / DeepSeekCN only), `status`, `agents`,
-`reasoning_replay`, `prefix_stability`, `cache`, `context_percent`,
-`git_branch`, `last_tool_elapsed` (reserved), `rate_limit` (reserved),
-`tokens`, and `session_metrics`. Omit `status_items` to keep the built-in
-default order; set it to `[]` to hide configurable chips.
+The bottom chrome is configurable. Run `/statusline` to choose what is
+visible, or set `[tui].status_items` in `config.toml`. Each key owns exactly
+one thing on screen: `mode` is the posture bar's plan/act/operate chip, and
+`model`, `context_percent`, `cost`, `balance` (prepaid providers only:
+DeepSeek, DeepSeekCN, OpenRouter, SiliconFlow), `cache`, `tokens` and
+`session_metrics` are segments of the metrics line below it. Omit
+`status_items` to keep the built-in default; set it to `[]` to strip the
+metrics line down to the help hint.
 
-`session_metrics` (on by default) paints the session metrics strip on the
-phase row: `4 turns · 108 steps │ LLM 11m46s · Tool call 1m52s │ TTFT avg
-1.5s · 120 tok/s │ Cache hit 99% │ Input 9.3M`. Turns are user turns; steps
-are model calls plus tool calls; `LLM` is the summed wall time of model
-calls and `Tool call` the summed wall time of tools; `TTFT avg` is the mean
-time to first streamed token; `tok/s` is provider-reported output tokens over
-streamed seconds; `Cache hit` and `Input` are provider-reported token
-classes. A cell whose provider or runtime evidence has not arrived is
-omitted rather than estimated, and on narrow rows the strip drops its
-lowest-value groups (steps and tool time first, then latency, turns, LLM
-time) instead of truncating a number. `/status` prints the untrimmed line.
+`context_percent` is on by default and shows `ctx NN%` at every fullness —
+0.9.12 went silent below 50% and left most of a session with no context
+signal at all. The reading keeps its warning colour from 80% up.
+
+The keys `status`, `agents`, `reasoning_replay`, `prefix_stability`,
+`git_branch`, `last_tool_elapsed` and `rate_limit` were retired in 0.9.13:
+they drove nothing. Old configuration files still load — the retired keys are
+ignored with a warning in the log.
+
+`session_metrics` (on by default) paints the latency pair on the metrics
+line: `ttft 1.5s` — the mean time to first streamed token — and `120 tok/s`,
+provider-reported output tokens over streamed seconds. Both come from the
+same accumulators `/status` prints in full (turns, steps, LLM and tool wall
+time, cache hit, input), and a figure whose provider or runtime evidence has
+not arrived is omitted rather than estimated. On narrow rows the pair sheds
+before the cost and the context reading rather than truncating a number.
 
 The transcript is the audit trail. When Codewhale reads files, runs commands,
 or edits code, the action appears there. If a command fails, use the visible

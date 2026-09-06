@@ -1191,7 +1191,13 @@ pub(crate) fn tideline_footer_from_app(app: &mut App, width: u16) -> TidelineFoo
     let permission_chip = permission_chip
         .map(|(text, ink)| (text.into_owned(), ink))
         .unwrap_or_else(|| (String::new(), ChromeInk::PermissionAsk));
-    let mode_chip = mode_chip.map(|(text, ink)| (text.into_owned(), ink));
+    // The mode chip is the one posture fact `/statusline` composes (#5950):
+    // its `StatusItem::Mode` toggle used to be inert. The permission chip,
+    // the working clocks (#5914) and the live counts are the bar's own
+    // posture statement and stay unconditional.
+    let mode_chip = mode_chip
+        .filter(|_| app.status_items.contains(&crate::config::StatusItem::Mode))
+        .map(|(text, ink)| (text.into_owned(), ink));
     // Cycle keys come from the binding table and only when that binding is
     // live for the current focus.
     let live_chord = |id: ShellBindingId| -> Option<&'static str> {

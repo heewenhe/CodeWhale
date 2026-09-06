@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `/statusline` drives the bottom chrome again. Since the 0.9.12 shell
+  redesign the posture bar and the metrics line were built independently of
+  `tui.status_items`, so every toggle in the picker except the balance fetch
+  was decoration. Each remaining item now shows or hides exactly one thing:
+  `model`, `context_percent`, `cost`, `balance`, `cache`, `tokens` and
+  `session_metrics` are metrics-line segments, and `mode` is the posture
+  bar's plan/act/operate chip. The `status`, `agents`, `reasoning_replay`,
+  `prefix_stability`, `git_branch`, `last_tool_elapsed` and `rate_limit`
+  items drove nothing and are retired; an existing `config.toml` still loads
+  and those keys are ignored (#5950).
+- The context reading is back on screen at every fullness. 0.9.12 painted
+  `ctx NN%` only from 50% up, which left most of a session with no context
+  signal at all; it now paints from 0% and keeps its warning colour from 80%
+  up (#5950).
+
 ### Added
 
 - The `/theme` picker now discovers valid user-authored `custom:<name>`

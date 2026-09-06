@@ -128,8 +128,8 @@ fn composed_frame_paints_each_fact_in_exactly_one_row() {
         let (mode, permission) = crate::tui::underwater::posture_chips(&app);
         let mode = mode.expect("mode chip").0.into_owned();
         let permission = permission.expect("permission chip").0.into_owned();
-        // The context reading stays silent below 50% fullness and paints
-        // exactly once at or above it.
+        // The context reading paints exactly once, at every fullness
+        // (#5950 — it used to go silent below 50%).
         let mut facts = vec![
             ("mode chip", format!("· {mode} (")),
             ("permission chip", format!("▶▶ {permission} (")),
@@ -143,17 +143,7 @@ fn composed_frame_paints_each_fact_in_exactly_one_row() {
             ("output rate", "40 tok/s".to_string()),
             ("ttft", "ttft 400ms".to_string()),
         ];
-        if pct >= 50 {
-            facts.push(("context reading", format!("ctx {pct}%")));
-            facts.push(("context percent", format!("{pct}%")));
-        } else {
-            assert_eq!(
-                count_rows_containing(&rows, "ctx "),
-                0,
-                "{width}x{height}: ctx stays silent below 50%:\n{}",
-                rows.join("\n")
-            );
-        }
+        facts.push(("context reading", format!("ctx {pct}%")));
         for (name, needle) in facts {
             if needle.is_empty() {
                 continue;
@@ -234,9 +224,10 @@ fn idle_frame_keeps_two_chrome_rows_and_last_turn_metrics() {
     let rows = draw(&mut app, 100, 32);
     let composer = app.viewport.last_composer_area.unwrap().bottom() as usize;
     assert!(rows[composer].starts_with("▶▶"), "{}", rows[composer]);
-    // The idle fixture sits at 0% context, so the reading stays silent.
+    // The idle fixture sits at 0% context and says so: the reading is on
+    // the row at every fullness (#5950), not only once it is a problem.
     assert!(
-        !rows[composer + 1].contains("ctx "),
+        rows[composer + 1].contains("ctx 0%"),
         "{}",
         rows[composer + 1]
     );
