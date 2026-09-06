@@ -625,6 +625,7 @@ fn runtime_compaction_uses_provider_route_context() {
         output_tokens: None,
     };
     let config = runtime_compaction_config(
+        &Config::default(),
         ApiProvider::OpenaiCodex,
         "gpt-5.5",
         Some(limits),

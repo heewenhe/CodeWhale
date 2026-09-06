@@ -291,3 +291,152 @@ fn successor_floor_counts_retained_user_messages_not_tool_results() {
         &PreparedCompactionEnvelope::new(config),
     ));
 }
+
+/// #5956: with no `[compaction] summary_instructions` configured, the
+/// summarizer prompt must stay byte-identical to the pre-#5956 constant.
+#[test]
+fn compact_prompt_without_operator_instructions_is_unchanged() {
+    assert_eq!(
+        compact_prompt(None, None),
+        format!("{COMPACT_PROMPT} {COMPACTION_LANGUAGE_CONTRACT}")
+    );
+    // Whitespace-only is unset, not an empty section.
+    assert_eq!(
+        compact_prompt(None, Some("   \n ")),
+        compact_prompt(None, None)
+    );
+    // The one-off `/compact <focus>` line keeps its exact shape.
+    assert_eq!(
+        compact_prompt(Some("the flaky test"), None),
+        format!(
+            "{COMPACT_PROMPT} {COMPACTION_LANGUAGE_CONTRACT}\n\nThe user asked this compaction to focus on: the flaky test"
+        )
+    );
+}
+
+/// #5956: the operator suffix is a clearly delimited section, and a manual
+/// `/compact <focus>` still composes *after* it.
+#[test]
+fn compact_prompt_appends_operator_instructions_before_focus() {
+    let prompt = compact_prompt(
+        Some("the flaky test"),
+        Some("Always restate open decisions."),
+    );
+
+    assert!(prompt.starts_with(COMPACT_PROMPT));
+    assert!(prompt.contains(OPERATOR_INSTRUCTIONS_HEADER));
+    assert!(prompt.contains("Always restate open decisions."));
+    assert!(prompt.contains(OPERATOR_INSTRUCTIONS_FOOTER));
+
+    let instructions_at = prompt.find(OPERATOR_INSTRUCTIONS_HEADER).expect("section");
+    let focus_at = prompt.find("focus on: the flaky test").expect("focus");
+    assert!(
+        instructions_at < focus_at,
+        "the standing instructions come first; the one-off focus composes after them"
+    );
+
+    // The quality-retry prompt is the same summarizer call, so it carries the
+    // same standing instructions.
+    let retry = compact_quality_retry_prompt(None, Some("Always restate open decisions."));
+    assert!(retry.contains("Always restate open decisions."));
+    assert!(!compact_quality_retry_prompt(None, None).contains(OPERATOR_INSTRUCTIONS_HEADER));
+}
+
+/// #5956: an oversized standing instruction is truncated at the cap rather
+/// than failing the compaction pass that keeps the session alive.
+#[test]
+fn operator_instructions_are_truncated_at_the_cap() {
+    let max = crate::config::COMPACTION_SUMMARY_INSTRUCTIONS_MAX_CHARS;
+    let long = "é".repeat(max + 500);
+    let section = operator_instructions_section(Some(&long)).expect("section is present");
+
+    let body = section
+        .trim_start_matches('\n')
+        .trim_start_matches(OPERATOR_INSTRUCTIONS_HEADER)
+        .trim_start_matches('\n')
+        .trim_end_matches(OPERATOR_INSTRUCTIONS_FOOTER)
+        .trim_end_matches('\n');
+    assert_eq!(body.chars().count(), max);
+    assert!(operator_instructions_section(None).is_none());
+    assert!(operator_instructions_section(Some("  ")).is_none());
+}
+
+/// #5956: the replacement history spends the configured verbatim budget, so a
+/// larger budget keeps more of the user's own earlier messages.
+#[test]
+fn replacement_history_honours_the_configured_retention_budget() {
+    let user = |text: &str| Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }],
+    };
+    let assistant = |text: &str| Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+            cache_control: None,
+        }],
+    };
+
+    // Each older user message is ~1 000 conservative tokens (3 chars/token).
+    let mut messages = Vec::new();
+    for idx in 0..10 {
+        messages.push(user(&format!("{idx}{}", "a".repeat(3_000))));
+        messages.push(assistant("ack"));
+    }
+    messages.push(user("the live request"));
+    messages.push(assistant("working on it"));
+
+    let checkpoint = format!("{COMPACTION_SUMMARY_MARKER} and produced this handoff.");
+    let count_verbatim = |budget: usize| {
+        last_round::build_replacement_history(&messages, &checkpoint, None, budget)
+            .expect("replacement history")
+            .len()
+    };
+
+    let small = count_verbatim(2_000);
+    let large = count_verbatim(20_000);
+    assert!(
+        large > small,
+        "a larger budget must keep more user messages verbatim ({small} vs {large})"
+    );
+    // The floor still keeps the last round plus the checkpoint.
+    assert!(
+        small >= 3,
+        "the bounded last round and checkpoint always survive"
+    );
+}
+
+/// #5956: the receipt clause names the effective budget and whether standing
+/// operator instructions were applied, so the knob is verifiable without logs.
+#[test]
+fn receipt_clause_reports_the_effective_compaction_tuning() {
+    let mut coverage = CompactionCoverage {
+        path: CompactionPath::Summary,
+        last_round_messages: 2,
+        last_round_tool_results: 0,
+        last_round_assistant: true,
+        dropped_messages: 8,
+        anchors_chars: 0,
+        retained_user_message_tokens: 60_000,
+        operator_instructions_applied: true,
+    };
+    let clause = coverage.receipt_clause();
+    assert!(
+        clause.contains("verbatim user budget 60000 tokens"),
+        "{clause}"
+    );
+    assert!(clause.contains("operator instructions applied"), "{clause}");
+
+    coverage.operator_instructions_applied = false;
+    assert!(!coverage.receipt_clause().contains("operator instructions"));
+
+    // The prune-only path builds no replacement history, so it reports no budget.
+    let prune_only = CompactionCoverage {
+        path: CompactionPath::PruneOnly,
+        ..CompactionCoverage::default()
+    };
+    assert!(!prune_only.receipt_clause().contains("verbatim user budget"));
+}

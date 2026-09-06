@@ -2638,6 +2638,46 @@ pub struct ContextConfig {
     pub seam_model: Option<String>,
 }
 
+/// Maximum characters of `[compaction] summary_instructions` that are
+/// appended to the summarizer prompt. Longer values are truncated (with a
+/// warning) rather than rejected: a long standing instruction should not fail
+/// the compaction pass that keeps the session alive.
+pub const COMPACTION_SUMMARY_INSTRUCTIONS_MAX_CHARS: usize = 4_000;
+/// Default verbatim retention budget for recent plain user messages in the
+/// compaction replacement history (Codex parity). Unset config keeps this.
+pub const DEFAULT_COMPACTION_RETAINED_USER_MESSAGE_TOKENS: usize = 20_000;
+/// Lower clamp: below this the replacement history stops carrying a usable
+/// amount of the user's own words.
+pub const MIN_COMPACTION_RETAINED_USER_MESSAGE_TOKENS: usize = 2_000;
+/// Upper clamp: above this the "compacted" history is large enough to
+/// re-trigger compaction on the next turn.
+pub const MAX_COMPACTION_RETAINED_USER_MESSAGE_TOKENS: usize = 200_000;
+
+/// Compaction summarizer tuning (`[compaction]`, #5956).
+///
+/// `auto_compact` / `auto_compact_threshold_percent` (settings.toml) decide
+/// *when* compaction runs; these two keys decide *how* the pass behaves. Both
+/// are absent by default and absent means today's built-in behavior, byte for
+/// byte.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct CompactionSettings {
+    /// Standing operator instructions appended to the built-in summarizer
+    /// prompt on every pass, manual and automatic — the effort-free
+    /// counterpart to a one-off `/compact <focus>`, which still composes
+    /// after this text. Empty or whitespace-only is treated as unset;
+    /// longer than [`COMPACTION_SUMMARY_INSTRUCTIONS_MAX_CHARS`] is
+    /// truncated where it is applied.
+    #[serde(default)]
+    pub summary_instructions: Option<String>,
+    /// Token budget for the recent plain user messages kept verbatim in the
+    /// replacement history. Clamped to
+    /// [`MIN_COMPACTION_RETAINED_USER_MESSAGE_TOKENS`]..=
+    /// [`MAX_COMPACTION_RETAINED_USER_MESSAGE_TOKENS`]; unset keeps
+    /// [`DEFAULT_COMPACTION_RETAINED_USER_MESSAGE_TOKENS`].
+    #[serde(default, alias = "retained_user_message_max_tokens")]
+    pub retained_user_message_tokens: Option<usize>,
+}
+
 /// Fleet-role model overrides for delegated workers. Canonical keys in
 /// `models` are `worker`, `scout`, `planner`, `reviewer`, `builder`,
 /// `verifier`, and `custom`. Legacy sub-agent type names remain accepted for
@@ -3258,6 +3298,11 @@ pub struct Config {
     /// parsed but ignored since the 2026-07-23 removal).
     #[serde(default)]
     pub context: ContextConfig,
+
+    /// Compaction summarizer tuning (#5956). Absent keeps the built-in
+    /// summarizer prompt and the 20 000-token verbatim retention budget.
+    #[serde(default)]
+    pub compaction: Option<CompactionSettings>,
 
     /// Agent Fleet trust/security/role/exec config.
     #[serde(default)]
@@ -7311,6 +7356,55 @@ impl Config {
         self.prompt_suggestion.unwrap_or(false)
     }
 
+    /// Standing operator instructions for the compaction summarizer
+    /// (`[compaction] summary_instructions`, #5956).
+    ///
+    /// Trimmed; empty or whitespace-only reads as unset so an accidentally
+    /// blank key cannot append an empty delimited section to every prompt.
+    /// The character cap is applied where the suffix is built, so the warning
+    /// fires once per compaction pass rather than once per turn.
+    #[must_use]
+    pub fn compaction_summary_instructions(&self) -> Option<String> {
+        self.compaction
+            .as_ref()
+            .and_then(|compaction| compaction.summary_instructions.as_deref())
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    }
+
+    /// Verbatim retention budget for recent plain user messages in the
+    /// compaction replacement history (`[compaction]
+    /// retained_user_message_tokens`, #5956).
+    ///
+    /// Unset returns the historical hard-coded 20 000. Explicit values clamp
+    /// to `2_000..=200_000`: below the floor the replacement history stops
+    /// carrying a usable amount of the user's own words, above the ceiling
+    /// the "compacted" history is large enough to re-trigger compaction on
+    /// the next turn.
+    #[must_use]
+    pub fn compaction_retained_user_message_tokens(&self) -> usize {
+        let Some(requested) = self
+            .compaction
+            .as_ref()
+            .and_then(|compaction| compaction.retained_user_message_tokens)
+        else {
+            return DEFAULT_COMPACTION_RETAINED_USER_MESSAGE_TOKENS;
+        };
+        let clamped = requested.clamp(
+            MIN_COMPACTION_RETAINED_USER_MESSAGE_TOKENS,
+            MAX_COMPACTION_RETAINED_USER_MESSAGE_TOKENS,
+        );
+        if clamped != requested {
+            tracing::warn!(
+                "[compaction] retained_user_message_tokens = {requested} is outside {}..={}; using {clamped}",
+                MIN_COMPACTION_RETAINED_USER_MESSAGE_TOKENS,
+                MAX_COMPACTION_RETAINED_USER_MESSAGE_TOKENS
+            );
+        }
+        clamped
+    }
+
     /// Return the maximum number of concurrent sub-agents.
     /// Checks `[subagents] max_concurrent` first, then top-level `max_subagents`,
     /// then falls back to `DEFAULT_MAX_SUBAGENTS`.
@@ -10612,6 +10706,7 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
                 .or(base.context.l3_threshold),
             seam_model: override_cfg.context.seam_model.or(base.context.seam_model),
         },
+        compaction: override_cfg.compaction.or(base.compaction),
         fleet: override_cfg.fleet.or(base.fleet),
         workflow: override_cfg.workflow.or(base.workflow),
         subagents: override_cfg.subagents.or(base.subagents),

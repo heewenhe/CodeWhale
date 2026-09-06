@@ -54,6 +54,15 @@ pub struct CompactionConfig {
     /// Workspace root, used only to re-state the user's `/anchor` file after
     /// the summary. `None` skips anchors.
     pub workspace: Option<std::path::PathBuf>,
+    /// Standing operator instructions from `[compaction] summary_instructions`
+    /// (#5956), appended to the summarizer prompt on every pass — manual and
+    /// automatic. `None` keeps the built-in prompt byte-identical. A manual
+    /// `/compact <focus>` still composes after this text.
+    pub summary_instructions: Option<String>,
+    /// Verbatim retention budget for recent plain user messages in the
+    /// replacement history (`[compaction] retained_user_message_tokens`,
+    /// #5956). Defaults to [`COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS`].
+    pub retained_user_message_tokens: usize,
 }
 
 /// Host-prepared configuration carried from compaction eligibility through
@@ -97,6 +106,8 @@ impl Default for CompactionConfig {
             focus: None,
             runtime_cost_owner: None,
             workspace: None,
+            summary_instructions: None,
+            retained_user_message_tokens: COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS,
         }
     }
 }
@@ -137,7 +148,12 @@ const RETAINED_TOOL_RESULT_MAX_CHARS: usize = 64 * 1024;
 const RETAINED_THINKING_MAX_CHARS: usize = 16 * 1024;
 /// Token budget for the recent user messages retained verbatim in the
 /// replacement history (Codex parity: COMPACT_USER_MESSAGE_MAX_TOKENS).
-pub(crate) const COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+///
+/// This is now the *default* only: `[compaction] retained_user_message_tokens`
+/// overrides it per session (#5956). Aliased to the config default so the two
+/// names cannot drift apart.
+pub(crate) const COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS: usize =
+    crate::config::DEFAULT_COMPACTION_RETAINED_USER_MESSAGE_TOKENS;
 /// Handoff summarization prompt, appended to the live conversation as the
 /// final user message (ported from Codex `templates/compact/prompt.md`).
 const COMPACT_PROMPT: &str = "You are performing a context checkpoint compaction. Create a \
@@ -415,7 +431,7 @@ fn estimate_retained_floor_conservative(
     prepared: &PreparedCompactionEnvelope,
 ) -> usize {
     let config = &prepared.config;
-    let retained = retained_user_messages(messages, COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS);
+    let retained = retained_user_messages(messages, config.retained_user_message_tokens);
     let retained_tokens = estimate_tokens(&retained).saturating_mul(3).div_ceil(2);
     let framing = retained.len().saturating_mul(12).saturating_add(48);
     let anchors = user_anchors_section(config.workspace.as_deref());
@@ -1248,8 +1264,9 @@ async fn compact_messages_with_metadata(
         messages,
         &checkpoint_text,
         pinned_anchors_text(config.workspace.as_deref()).as_deref(),
+        config.retained_user_message_tokens,
     )?;
-    let coverage = last_round::measure_coverage(
+    let mut coverage = last_round::measure_coverage(
         messages,
         &retained,
         CompactionPath::Summary,
@@ -1257,6 +1274,11 @@ async fn compact_messages_with_metadata(
             .map(|text| text.chars().count())
             .unwrap_or(0),
     );
+    // Report the tuning actually in force so the receipt shows the operator
+    // their knobs took effect (#5956).
+    coverage.retained_user_message_tokens = config.retained_user_message_tokens;
+    coverage.operator_instructions_applied =
+        operator_instructions_section(config.summary_instructions.as_deref()).is_some();
     Ok((
         retained,
         Some(SystemPrompt::Blocks(vec![summary_block])),
@@ -1264,8 +1286,42 @@ async fn compact_messages_with_metadata(
     ))
 }
 
-fn compact_prompt(focus: Option<&str>) -> String {
+/// Delimiters around the operator's standing summarizer instructions. The
+/// summarizer sees a plain user message, so the section must announce itself:
+/// unfenced free text reads as more conversation to summarize.
+const OPERATOR_INSTRUCTIONS_HEADER: &str = "--- Additional instructions from the operator ---";
+const OPERATOR_INSTRUCTIONS_FOOTER: &str = "--- End of additional instructions ---";
+
+/// Render `[compaction] summary_instructions` as a delimited prompt suffix.
+///
+/// `None` (unset, or whitespace-only) produces no section at all, which is
+/// what keeps the default prompt byte-identical to the pre-#5956 constant.
+/// The cap is enforced here rather than at config load so the warning fires
+/// once per compaction pass instead of once per turn.
+fn operator_instructions_section(instructions: Option<&str>) -> Option<String> {
+    let text = instructions
+        .map(str::trim)
+        .filter(|text| !text.is_empty())?;
+    let max_chars = crate::config::COMPACTION_SUMMARY_INSTRUCTIONS_MAX_CHARS;
+    let text = if text.chars().count() > max_chars {
+        logging::warn(format!(
+            "[compaction] summary_instructions is longer than {max_chars} characters; \
+             the summarizer prompt suffix was truncated"
+        ));
+        truncate_chars(text, max_chars)
+    } else {
+        text
+    };
+    Some(format!(
+        "\n\n{OPERATOR_INSTRUCTIONS_HEADER}\n{text}\n{OPERATOR_INSTRUCTIONS_FOOTER}"
+    ))
+}
+
+fn compact_prompt(focus: Option<&str>, instructions: Option<&str>) -> String {
     let mut prompt = format!("{COMPACT_PROMPT} {COMPACTION_LANGUAGE_CONTRACT}");
+    if let Some(section) = operator_instructions_section(instructions) {
+        prompt.push_str(&section);
+    }
     if let Some(focus) = focus.map(str::trim).filter(|focus| !focus.is_empty()) {
         let _ = write!(
             prompt,
@@ -1275,13 +1331,16 @@ fn compact_prompt(focus: Option<&str>) -> String {
     prompt
 }
 
-fn compact_quality_retry_prompt(focus: Option<&str>) -> String {
+fn compact_quality_retry_prompt(focus: Option<&str>, instructions: Option<&str>) -> String {
     let mut prompt = format!(
         "The previous handoff response was empty or a placeholder. Return a substantive factual \
 continuation handoff. State the user objective, completed and current work, hard constraints, verified \
 evidence, unresolved failures, and the single next action. Do not refuse, call tools, discuss \
 checkpoint machinery, or return a placeholder. {COMPACTION_LANGUAGE_CONTRACT}"
     );
+    if let Some(section) = operator_instructions_section(instructions) {
+        prompt.push_str(&section);
+    }
     if let Some(focus) = focus.map(str::trim).filter(|focus| !focus.is_empty()) {
         let _ = write!(
             prompt,
@@ -1368,7 +1427,10 @@ async fn create_summary(
     request_messages.push(Message {
         role: Role::User,
         content: vec![ContentBlock::Text {
-            text: compact_prompt(config.focus.as_deref()),
+            text: compact_prompt(
+                config.focus.as_deref(),
+                config.summary_instructions.as_deref(),
+            ),
             cache_control: None,
         }],
     });
@@ -1473,7 +1535,10 @@ no replacement checkpoint was committed",
                 ));
             };
             instruction.content = vec![ContentBlock::Text {
-                text: compact_quality_retry_prompt(config.focus.as_deref()),
+                text: compact_quality_retry_prompt(
+                    config.focus.as_deref(),
+                    config.summary_instructions.as_deref(),
+                ),
                 cache_control: None,
             }];
             continue;

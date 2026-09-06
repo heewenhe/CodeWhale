@@ -9,9 +9,8 @@ use anyhow::Result;
 use crate::models::{ContentBlock, Message, SystemPrompt};
 
 use super::{
-    COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS, compaction_checkpoint_message,
-    is_compaction_checkpoint_message, retained_user_messages, truncate_retained_block,
-    user_text_of,
+    compaction_checkpoint_message, is_compaction_checkpoint_message, retained_user_messages,
+    truncate_retained_block, user_text_of,
 };
 
 const LAST_ROUND_TOOL_RESULT_MAX_CHARS: usize = 8 * 1024;
@@ -32,6 +31,13 @@ pub struct CompactionCoverage {
     pub last_round_assistant: bool,
     pub dropped_messages: usize,
     pub anchors_chars: usize,
+    /// Effective `[compaction] retained_user_message_tokens` budget this pass
+    /// spent on verbatim user messages (#5956). `0` on the prune-only path,
+    /// which never builds a replacement history.
+    pub retained_user_message_tokens: usize,
+    /// Whether `[compaction] summary_instructions` was appended to the
+    /// summarizer prompt on this pass (#5956).
+    pub operator_instructions_applied: bool,
 }
 
 impl CompactionCoverage {
@@ -52,6 +58,18 @@ impl CompactionCoverage {
         );
         if self.anchors_chars > 0 {
             clause.push_str(&format!("; anchors {} chars", self.anchors_chars));
+        }
+        // Name the tuning knobs so an operator who set them can tell they took
+        // effect without reading the log (#5956). The prune-only path builds no
+        // replacement history, so it reports no budget.
+        if self.retained_user_message_tokens > 0 {
+            clause.push_str(&format!(
+                "; verbatim user budget {} tokens",
+                self.retained_user_message_tokens
+            ));
+        }
+        if self.operator_instructions_applied {
+            clause.push_str("; operator instructions applied");
         }
         clause
     }
@@ -406,17 +424,25 @@ pub(super) fn measure_coverage(
             .any(|message| message.role.is_assistant_like()),
         dropped_messages: original.len().saturating_sub(replacement.len()),
         anchors_chars,
+        // Tuning provenance is owned by the caller that holds the
+        // `CompactionConfig`; measurement over two message lists cannot know it.
+        retained_user_message_tokens: 0,
+        operator_instructions_applied: false,
     }
 }
 
+/// Build the post-compaction history: recent plain user messages kept
+/// verbatim within `retained_user_message_tokens`, the bounded last round, and
+/// the checkpoint. The budget is `[compaction] retained_user_message_tokens`
+/// (#5956); it was a hard-coded 20 000 before that key existed.
 pub(super) fn build_replacement_history(
     messages: &[Message],
     checkpoint_text: &str,
     anchors: Option<&str>,
+    retained_user_message_tokens: usize,
 ) -> Result<Vec<Message>> {
     let (start, end) = last_round_range(messages);
-    let mut retained =
-        retained_user_messages(&messages[..start], COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS);
+    let mut retained = retained_user_messages(&messages[..start], retained_user_message_tokens);
     retained.extend(bound_last_round(&messages[start..end]));
     retained.push(compaction_checkpoint_message(&SystemPrompt::Text(
         checkpoint_text.to_string(),
@@ -626,8 +652,13 @@ mod tests {
         ];
         assert_eq!(last_round_start(&original), 0);
         let next = format!("{COMPACTION_SUMMARY_MARKER}: keep the failing test result");
-        let replaced = build_replacement_history(&original, &next, None)
-            .expect("toolless tails must not drop the last tool result");
+        let replaced = build_replacement_history(
+            &original,
+            &next,
+            None,
+            crate::compaction::COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS,
+        )
+        .expect("toolless tails must not drop the last tool result");
         assert!(replaced.iter().any(|message| {
             message.content.iter().any(|block| {
                 matches!(
@@ -716,8 +747,13 @@ mod tests {
         let next = format!(
             "{COMPACTION_SUMMARY_MARKER}: second handoff with User-pinned anchors (verbatim):\nship 0.9.12"
         );
-        let replaced = build_replacement_history(&first, &next, Some("ship 0.9.12"))
-            .expect("second compact must keep last round and one receipt");
+        let replaced = build_replacement_history(
+            &first,
+            &next,
+            Some("ship 0.9.12"),
+            crate::compaction::COMPACT_RETAINED_USER_MESSAGE_MAX_TOKENS,
+        )
+        .expect("second compact must keep last round and one receipt");
         let checkpoints = replaced
             .iter()
             .filter(|message| is_compaction_checkpoint_message(message))

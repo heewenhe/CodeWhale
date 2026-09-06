@@ -1712,6 +1712,13 @@ pub struct App {
     pub auto_compact: bool,
     pub auto_compact_user_configured: bool,
     pub auto_compact_threshold_percent: f64,
+    /// `[compaction] summary_instructions` resolved at startup (#5956): the
+    /// standing operator suffix appended to every summarizer prompt, manual
+    /// and automatic.
+    pub compaction_summary_instructions: Option<String>,
+    /// `[compaction] retained_user_message_tokens` resolved and clamped at
+    /// startup (#5956).
+    pub compaction_retained_user_message_tokens: usize,
     pub stopped_turn: bool,
     pub calm_mode: bool,
     pub low_motion: bool,
@@ -6367,6 +6374,8 @@ impl App {
                 model,
                 route_limits,
             )),
+            summary_instructions: self.compaction_summary_instructions.clone(),
+            retained_user_message_tokens: self.compaction_retained_user_message_tokens,
             ..Default::default()
         }
     }
