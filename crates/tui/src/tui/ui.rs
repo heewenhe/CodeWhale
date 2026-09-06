@@ -1275,6 +1275,10 @@ mod provider_key_validation_tests {
 
     struct ConfigPathEnvGuard {
         _tmp: TempDir,
+        // Onboarding completion runs the setup transaction (setup_state.json,
+        // settings.toml) against `CODEWHALE_HOME`; without this guard the
+        // fixture provider landed in the developer's real ~/.codewhale (#5932).
+        _codewhale_home: crate::test_support::EnvVarGuard,
         _codewhale_config_path: crate::test_support::EnvVarGuard,
         _deepseek_config_path: crate::test_support::EnvVarGuard,
         _lock: crate::test_support::TestEnvLock,
@@ -1284,11 +1288,13 @@ mod provider_key_validation_tests {
         fn new() -> Self {
             let lock = crate::test_support::lock_test_env();
             let tmp = TempDir::new().expect("config tempdir");
-            let config_path = tmp.path().join(".codewhale").join("config.toml");
+            let home = tmp.path().join(".codewhale");
+            let config_path = home.join("config.toml");
             std::fs::create_dir_all(config_path.parent().expect("config parent"))
                 .expect("config dir");
             Self {
                 _tmp: tmp,
+                _codewhale_home: crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &home),
                 _codewhale_config_path: crate::test_support::EnvVarGuard::set(
                     "CODEWHALE_CONFIG_PATH",
                     &config_path,
