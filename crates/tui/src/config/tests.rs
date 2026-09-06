@@ -13732,3 +13732,158 @@ fn compaction_summary_instructions_trims_and_treats_blank_as_unset() {
         .expect("config parses");
     assert_eq!(blank.compaction_summary_instructions(), None);
 }
+
+/// The Codewhale route must attach its account key on every origin it is
+/// allowed to reach, from every documented source.
+///
+/// Regression: `CODEWHALE_API_BASE` is the route's *own* documented override,
+/// but it made the endpoint look "custom", which suppressed the saved and
+/// exported key; the loopback arm below then returned an empty key and the
+/// request went out with no `Authorization` header at all.
+#[test]
+fn codewhale_route_resolves_its_key_from_every_documented_source() -> Result<()> {
+    let _lock = lock_test_env();
+    let temp_root = tempfile::tempdir()?;
+    let _guard = EnvGuard::new(temp_root.path());
+    let home = temp_root.path().join("codewhale-home");
+    fs::create_dir_all(&home)?;
+    let _home = EnvVarGuard::set("CODEWHALE_HOME", home.as_os_str());
+    let _backend = EnvVarGuard::set("CODEWHALE_SECRET_BACKEND", "file");
+
+    let route = |base: Option<&str>| Config {
+        provider: Some("codewhale".to_string()),
+        providers: Some(ProvidersConfig {
+            codewhale: ProviderConfig {
+                base_url: base.map(str::to_string),
+                ..ProviderConfig::default()
+            },
+            ..ProvidersConfig::default()
+        }),
+        ..Config::default()
+    };
+
+    // Both the default origin and a loopback origin the operator declared in
+    // CODEWHALE_API_BASE are the route's own authenticated endpoint.
+    for declared in [None, Some("http://127.0.0.1:8901/v1")] {
+        let _base = declared.map(|value| EnvVarGuard::set("CODEWHALE_API_BASE", value));
+        {
+            let _env = EnvVarGuard::set("CODEWHALE_API_KEY", "cwc_key_from_env");
+            assert_eq!(
+                route(None).deepseek_api_key()?,
+                "cwc_key_from_env",
+                "env key, declared base {declared:?}"
+            );
+        }
+
+        // The slot `codewhale account api-keys create --use` writes.
+        let secrets = codewhale_secrets::Secrets::auto_detect();
+        secrets.set("codewhale", "cwc_key_from_slot")?;
+        assert_eq!(
+            route(None).deepseek_api_key()?,
+            "cwc_key_from_slot",
+            "secret store, declared base {declared:?}"
+        );
+
+        let mut configured = route(None);
+        if let Some(providers) = configured.providers.as_mut() {
+            providers.codewhale.api_key = Some("cwc_key_from_config".to_string());
+        }
+        assert_eq!(
+            configured.deepseek_api_key()?,
+            "cwc_key_from_config",
+            "config api_key, declared base {declared:?}"
+        );
+
+        let mut bound = route(None);
+        if let Some(providers) = bound.providers.as_mut() {
+            providers.codewhale.api_key_env = Some("MY_CODEWHALE_KEY".to_string());
+        }
+        let _bound_env = EnvVarGuard::set("MY_CODEWHALE_KEY", "cwc_key_from_api_key_env");
+        assert_eq!(
+            bound.deepseek_api_key()?,
+            "cwc_key_from_api_key_env",
+            "api_key_env, declared base {declared:?}"
+        );
+
+        secrets.delete("codewhale")?;
+    }
+    Ok(())
+}
+
+/// Widening the official-endpoint family must not widen where the key goes.
+///
+/// A base URL the operator did not declare in `CODEWHALE_API_BASE` is still a
+/// foreign host: the ambient account key must not follow it.
+#[test]
+fn codewhale_ambient_key_never_follows_an_undeclared_host() -> Result<()> {
+    let _lock = lock_test_env();
+    let temp_root = tempfile::tempdir()?;
+    let _guard = EnvGuard::new(temp_root.path());
+    let home = temp_root.path().join("codewhale-home");
+    fs::create_dir_all(&home)?;
+    let _home = EnvVarGuard::set("CODEWHALE_HOME", home.as_os_str());
+    let _backend = EnvVarGuard::set("CODEWHALE_SECRET_BACKEND", "file");
+    let _env = EnvVarGuard::set("CODEWHALE_API_KEY", "cwc_key_must_not_travel");
+    codewhale_secrets::Secrets::auto_detect().set("codewhale", "cwc_key_saved_must_not_travel")?;
+    // The operator declared one origin; the config table names a different one.
+    let _base = EnvVarGuard::set("CODEWHALE_API_BASE", "http://127.0.0.1:8901/v1");
+
+    let config = Config {
+        provider: Some("codewhale".to_string()),
+        providers: Some(ProvidersConfig {
+            codewhale: ProviderConfig {
+                base_url: Some("https://not-declared.example/v1".to_string()),
+                ..ProviderConfig::default()
+            },
+            ..ProvidersConfig::default()
+        }),
+        ..Config::default()
+    };
+    let error = config
+        .deepseek_api_key()
+        .expect_err("an undeclared host must not inherit the account key");
+    let text = error.to_string();
+    assert!(!text.contains("cwc_key_must_not_travel"), "{text}");
+    assert!(!text.contains("cwc_key_saved_must_not_travel"), "{text}");
+    Ok(())
+}
+
+/// A missing Codewhale key must fail before any request, naming the exact fix.
+///
+/// Regression: the loopback branch treated this route as a keyless local
+/// runtime and returned an empty key, so the request was dispatched with no
+/// credential and the service answered 401 instead of the CLI answering first.
+#[test]
+fn codewhale_route_without_a_key_fails_before_any_request() -> Result<()> {
+    let _lock = lock_test_env();
+    let temp_root = tempfile::tempdir()?;
+    let _guard = EnvGuard::new(temp_root.path());
+    let home = temp_root.path().join("codewhale-home");
+    fs::create_dir_all(&home)?;
+    let _home = EnvVarGuard::set("CODEWHALE_HOME", home.as_os_str());
+    let _backend = EnvVarGuard::set("CODEWHALE_SECRET_BACKEND", "file");
+    let _base = EnvVarGuard::set("CODEWHALE_API_BASE", "http://127.0.0.1:8901/v1");
+
+    let config = Config {
+        provider: Some("codewhale".to_string()),
+        ..Config::default()
+    };
+    let error = config
+        .deepseek_api_key()
+        .expect_err("a keyless Codewhale route must not dispatch");
+    let text = error.to_string();
+    assert!(text.contains("CODEWHALE_API_KEY"), "{text}");
+    assert!(
+        text.contains("codewhale account api-keys create --name <name> --scope models:infer --use"),
+        "{text}"
+    );
+    assert!(
+        text.contains("https://app.codewhale.net/settings?section=api"),
+        "{text}"
+    );
+    // The only `cwc_key_` in the message is the placeholder in the export
+    // example, never a resolved value.
+    assert_eq!(text.matches("cwc_key_").count(), 1, "{text}");
+    assert!(text.contains("cwc_key_..."), "{text}");
+    Ok(())
+}

@@ -504,7 +504,9 @@ pub(crate) fn offerings_from_json_for_test(
 mod tests {
     use super::*;
     use crate::config::ApiProvider;
-    use crate::provider_lake::{all_catalog_models_for_provider, clear_live_snapshot};
+    use crate::provider_lake::{
+        all_catalog_models_for_provider, clear_live_snapshot, lock_live_snapshot,
+    };
     use crate::test_support::{EnvVarGuard, lock_test_env};
     use codewhale_config::catalog::CatalogSource;
 
@@ -611,6 +613,7 @@ mod tests {
     #[test]
     fn publish_from_path_updates_provider_lake() {
         let _lock = lock_test_env();
+        let _live = lock_live_snapshot();
         clear_live_snapshot();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("catalog.json");
@@ -683,6 +686,7 @@ mod tests {
     #[test]
     fn invalid_json_keeps_bundled_and_marks_failed() {
         let _lock = lock_test_env();
+        let _live = lock_live_snapshot();
         clear_live_snapshot();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bad.json");
@@ -712,6 +716,7 @@ mod tests {
     #[test]
     fn stale_disk_cache_still_publishes() {
         let _lock = lock_test_env();
+        let _live = lock_live_snapshot();
         clear_live_snapshot();
         let dir = tempfile::tempdir().expect("tempdir");
         let home = dir.path().join("home");
@@ -741,6 +746,7 @@ mod tests {
     #[test]
     fn network_failure_keeps_prior_rows_and_marks_failed() {
         let _lock = lock_test_env();
+        let _live = lock_live_snapshot();
         clear_live_snapshot();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("catalog.json");

@@ -11,7 +11,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 use codewhale_config::device_code::DevicePollOutcome;
 use codewhale_config::{ConfigStore, ProviderKind};
 use codewhale_secrets::Secrets;
@@ -110,12 +110,16 @@ enum CloudKeysCommand {
     /// Save a provider key to the signed-in Codewhale account.
     Set(CloudKeySetArgs),
     /// Remove a provider key from the signed-in Codewhale account.
-    Remove { provider: CloudProvider },
+    Remove {
+        /// Provider id from the account's catalog (`account keys list`).
+        provider: String,
+    },
 }
 
 #[derive(Debug, Args)]
 struct CloudKeySetArgs {
-    provider: CloudProvider,
+    /// Provider id from the account's catalog (`account keys list`).
+    provider: String,
     /// Read the key from stdin. Useful for pipes and secret-manager commands.
     #[arg(long = "api-key-stdin", conflicts_with = "from_local")]
     api_key_stdin: bool,
@@ -127,56 +131,78 @@ struct CloudKeySetArgs {
     label: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum CloudProvider {
-    Deepseek,
-    Anthropic,
-    Openai,
-    Openrouter,
-    Zai,
-    Moonshot,
-    Xai,
-    #[value(name = "xiaomi", alias = "xiaomi-mimo")]
-    Xiaomi,
+/// One row of the account control plane's public provider catalog.
+///
+/// This is untrusted remote data, not a Codewhale-owned enum: the account
+/// service adds providers without a CLI release, so the catalog is read as
+/// data and every id is re-validated locally before it reaches a URL path.
+/// Only the fields this surface actually uses are modeled; unknown fields are
+/// ignored rather than being turned into behavior.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogProvider {
+    id: String,
+    #[serde(default)]
+    label: String,
+    /// The runtime provider id this catalog row maps onto, when one exists.
+    /// `--from-local` uses it to find the local credential; without it the
+    /// row's own id is tried.
+    #[serde(default)]
+    runtime_provider: Option<String>,
 }
 
-impl CloudProvider {
-    const ALL: [Self; 8] = [
-        Self::Deepseek,
-        Self::Anthropic,
-        Self::Openai,
-        Self::Openrouter,
-        Self::Zai,
-        Self::Moonshot,
-        Self::Xai,
-        Self::Xiaomi,
-    ];
+#[derive(Debug, Deserialize)]
+struct ProviderCatalogResponse {
+    #[serde(default)]
+    providers: Vec<CatalogProvider>,
+}
 
-    fn slug(self) -> &'static str {
-        match self {
-            Self::Deepseek => "deepseek",
-            Self::Anthropic => "anthropic",
-            Self::Openai => "openai",
-            Self::Openrouter => "openrouter",
-            Self::Zai => "zai",
-            Self::Moonshot => "moonshot",
-            Self::Xai => "xai",
-            Self::Xiaomi => "xiaomi",
+impl CatalogProvider {
+    /// Non-empty display label, falling back to the id.
+    fn display_label(&self) -> String {
+        let label = printable(&self.label);
+        if label.is_empty() {
+            printable(&self.id)
+        } else {
+            label
         }
     }
 
-    fn local_kind(self) -> ProviderKind {
-        match self {
-            Self::Deepseek => ProviderKind::Deepseek,
-            Self::Anthropic => ProviderKind::Anthropic,
-            Self::Openai => ProviderKind::Openai,
-            Self::Openrouter => ProviderKind::Openrouter,
-            Self::Zai => ProviderKind::Zai,
-            Self::Moonshot => ProviderKind::Moonshot,
-            Self::Xai => ProviderKind::Xai,
-            Self::Xiaomi => ProviderKind::XiaomiMimo,
-        }
+    /// The local [`ProviderKind`] this catalog row maps onto, if any.
+    ///
+    /// The catalog states its own runtime mapping (`xiaomi` →
+    /// `xiaomi-mimo`); the row id is only a fallback for a provider whose
+    /// catalog id already equals the runtime id.
+    fn local_kind(&self) -> Option<ProviderKind> {
+        self.runtime_provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .and_then(ProviderKind::parse_config_identity)
+            .or_else(|| ProviderKind::parse_config_identity(&self.id))
     }
+}
+
+/// Accept a provider id conservatively before it is ever put in a URL path.
+///
+/// `^[a-z0-9][a-z0-9-]{0,63}$`. The catalog is remote data, so this guards
+/// both directions: a hostile catalog cannot smuggle a path segment, and a
+/// mistyped argument fails locally instead of as a confusing 404.
+fn validate_provider_id(value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    let bytes = trimmed.as_bytes();
+    let well_formed = (1..=64).contains(&bytes.len())
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-');
+    if !well_formed {
+        bail!(
+            "`{}` is not a valid provider id. Ids are 1-64 characters of lowercase letters, digits, and `-`. Run `codewhale account keys list` to see the account's providers",
+            printable(trimmed)
+        );
+    }
+    Ok(trimmed.to_string())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -406,8 +432,8 @@ impl<'a, T: CloudTransport> CloudClient<'a, T> {
         Ok(me.user)
     }
 
-    fn set_key(&self, provider: CloudProvider, key: &str, label: &str) -> Result<()> {
-        let path = format!("/api/model-keys/{}", provider.slug());
+    fn set_key(&self, provider: &str, key: &str, label: &str) -> Result<()> {
+        let path = format!("/api/model-keys/{provider}");
         let response = self.execute_authenticated(
             HttpMethod::Put,
             &path,
@@ -416,10 +442,47 @@ impl<'a, T: CloudTransport> CloudClient<'a, T> {
         expect_empty(response, &[200, 201])
     }
 
-    fn remove_key(&self, provider: CloudProvider) -> Result<()> {
-        let path = format!("/api/model-keys/{}", provider.slug());
+    fn remove_key(&self, provider: &str) -> Result<()> {
+        let path = format!("/api/model-keys/{provider}");
         let response = self.execute_authenticated(HttpMethod::Delete, &path, None)?;
         expect_empty(response, &[200, 204])
+    }
+
+    /// The account control plane's public provider catalog.
+    ///
+    /// This replaced a hardcoded eight-provider enum: the set of providers a
+    /// customer can connect is owned by the control plane, not the CLI, so a
+    /// newly supported provider must not need a CLI release. The route is
+    /// public, so no session is required to *list* what could be connected —
+    /// only to read or write this account's keys.
+    ///
+    /// Rows with an id this CLI would refuse to put in a URL path are dropped
+    /// rather than trusted; duplicates collapse onto the first row.
+    fn provider_catalog(&self) -> Result<Vec<CatalogProvider>> {
+        let response = self.transport.execute(CloudRequest {
+            method: HttpMethod::Get,
+            path: "/api/model-providers".to_string(),
+            bearer: None,
+            body: None,
+        })?;
+        let listing: ProviderCatalogResponse = expect_json(response, &[200])?;
+        let mut seen = std::collections::BTreeSet::new();
+        let providers: Vec<CatalogProvider> = listing
+            .providers
+            .into_iter()
+            .filter(|row| validate_provider_id(&row.id).is_ok())
+            .filter(|row| seen.insert(row.id.trim().to_string()))
+            .map(|mut row| {
+                row.id = row.id.trim().to_string();
+                row
+            })
+            .collect();
+        if providers.is_empty() {
+            bail!(
+                "The Codewhale service returned no connectable providers. Check the account API origin, or try again"
+            );
+        }
+        Ok(providers)
     }
 
     fn logout(&self) -> Result<bool> {
@@ -714,51 +777,69 @@ fn run_with<T: CloudTransport, W: Write>(
         CloudCommand::Keys(keys) => match keys.command {
             CloudKeysCommand::List => {
                 let user = client.me()?;
+                let catalog = client.provider_catalog()?;
                 write_account(out, "Codewhale account keys.", profile, api_base, &user)?;
-                for provider in CloudProvider::ALL {
-                    let state = user.model_keys.get(provider.slug());
-                    if state.is_some_and(|state| state.configured) {
-                        writeln!(out, "{}: set", provider.slug())?;
-                    } else {
-                        writeln!(out, "{}: not set", provider.slug())?;
-                    }
+                for row in &catalog {
+                    let stored = user.model_keys.get(&row.id);
+                    let status = match stored {
+                        Some(state) if state.configured => match state
+                            .state
+                            .as_deref()
+                            .map(printable)
+                            .filter(|value| !value.is_empty())
+                        {
+                            Some(reported) => format!("set ({reported})"),
+                            None => "set".to_string(),
+                        },
+                        _ => "not set".to_string(),
+                    };
+                    writeln!(out, "{}: {status} — {}", row.id, row.display_label())?;
                 }
                 Ok(())
             }
             CloudKeysCommand::Set(set) => {
+                let provider = validate_provider_id(&set.provider)?;
                 let user = client.me()?;
+                let catalog = client.provider_catalog()?;
+                let row = catalog_row(&catalog, &provider)?;
                 let key = if set.from_local {
-                    resolve_local_key(config, provider_secrets, set.provider)?.ok_or_else(|| {
+                    let kind = row.local_kind().ok_or_else(|| {
+                        anyhow!(
+                            "`{provider}` has no local runtime provider, so there is no local key to copy. Use `--api-key-stdin` or the hidden prompt"
+                        )
+                    })?;
+                    resolve_local_key(config, provider_secrets, kind)?.ok_or_else(|| {
                         anyhow!(
                             "No local {} API key was found in config, the secret store, or the environment",
-                            set.provider.slug()
+                            kind.as_str()
                         )
                     })?
                 } else if set.api_key_stdin {
                     key_reader(KeyReadMode::Stdin)?
                 } else {
-                    key_reader(KeyReadMode::HiddenPrompt(set.provider.slug().to_string()))?
+                    key_reader(KeyReadMode::HiddenPrompt(provider.clone()))?
                 };
                 let key = key.trim().to_string();
                 validate_api_key(&key)?;
                 let label = validate_label(&set.label)?;
-                client.set_key(set.provider, &key, &label)?;
+                client.set_key(&provider, &key, &label)?;
                 writeln!(
                     out,
-                    "Saved {} for Codewhale account {} (profile {}).",
-                    set.provider.slug(),
+                    "Saved {provider} for Codewhale account {} (profile {}).",
                     printable(&user.id),
                     printable(profile)
                 )?;
                 Ok(())
             }
             CloudKeysCommand::Remove { provider } => {
+                let provider = validate_provider_id(&provider)?;
                 let user = client.me()?;
-                client.remove_key(provider)?;
+                let catalog = client.provider_catalog()?;
+                let _ = catalog_row(&catalog, &provider)?;
+                client.remove_key(&provider)?;
                 writeln!(
                     out,
-                    "Removed {} from Codewhale account {} (profile {}).",
-                    provider.slug(),
+                    "Removed {provider} from Codewhale account {} (profile {}).",
                     printable(&user.id),
                     printable(profile)
                 )?;
@@ -766,7 +847,7 @@ fn run_with<T: CloudTransport, W: Write>(
             }
         },
         CloudCommand::ApiKeys(api_keys) => {
-            machine::run_api_keys(api_keys, &client, machine, out, sleeper)
+            machine::run_api_keys(api_keys, &client, machine, provider_secrets, out, sleeper)
         }
         CloudCommand::Whoami => match machine.resolve()? {
             // A present machine key wins and never falls back: silently
@@ -1038,12 +1119,29 @@ fn is_ascii_control(character: char) -> bool {
     character <= '\u{001f}' || character == '\u{007f}'
 }
 
+/// Find one catalog row by id, or fail naming what the account does offer.
+///
+/// A catalog miss is the common typo, so the message lists the ids rather than
+/// leaving the user to guess or read a 404.
+fn catalog_row<'a>(catalog: &'a [CatalogProvider], provider: &str) -> Result<&'a CatalogProvider> {
+    catalog
+        .iter()
+        .find(|row| row.id == provider)
+        .ok_or_else(|| {
+            let known = catalog
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow!("`{provider}` is not a provider this Codewhale account can connect. Known providers: {known}")
+        })
+}
+
 fn resolve_local_key(
     config: &ConfigStore,
     secrets: &Secrets,
-    provider: CloudProvider,
+    kind: ProviderKind,
 ) -> Result<Option<String>> {
-    let kind = provider.local_kind();
     let provider_config = config.config.providers.for_provider(kind);
     let from_config = provider_config.api_key.clone().or_else(|| {
         (kind == ProviderKind::Deepseek)

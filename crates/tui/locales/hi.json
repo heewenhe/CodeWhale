@@ -492,6 +492,7 @@
   "ModelsSourceFallback": "शामिल या कॉन्फ़िगर किए मॉडल; उपलब्धता सत्यापित नहीं है।",
   "CmdModelDbDescription": "बंडल किया मॉडल डेटाबेस ब्राउज़ करें",
   "CmdNetworkDescription": "नेटवर्क अनुमति और निषेध नियम प्रबंधित करें",
+  "CmdShannonDescription": "Inspect this session's ShannonNet World, capabilities, children, and receipts",
   "CmdUpdateDescription": "नया Codewhale रिलीज़ जाँचें और इंस्टॉल करें",
   "CmdNoteDescription": "वर्कस्पेस नोट जोड़ें, सूचीबद्ध करें, संपादित करें या हटाएँ",
   "CmdThemeDescription": "थीम बदलें या थीम चयनकर्ता खोलें",

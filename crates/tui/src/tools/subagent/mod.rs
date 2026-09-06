@@ -11364,7 +11364,132 @@ async fn cancelled_subagent_result(
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+/// Runs one sub-agent under delegated authority. When the session's
+/// sandbox backend can derive a child (ShannonNet: a spawned child identity
+/// with a World projected from the session World), the sub-agent's tools run
+/// through that child backend and never as the session principal; when it
+/// cannot (a plain remote executor, or no backend), the sub-agent shares the
+/// parent's backend as before. A failed delegation fails the spawn rather
+/// than silently running the child with the parent's authority. On
+/// completion the child is joined: a typed receipt on the task and the
+/// child's authority retired.
 async fn run_subagent(
+    runtime: &SubAgentRuntime,
+    agent_id: String,
+    agent_type: FleetRole,
+    prompt: String,
+    assignment: SubAgentAssignment,
+    allowed_tools: Option<Vec<String>>,
+    fork_context: bool,
+    started_at: Instant,
+    max_steps: u32,
+    token_budget: Option<u64>,
+    turn_end_parking: Option<Arc<std::sync::atomic::AtomicBool>>,
+    input_rx: mpsc::UnboundedReceiver<SubAgentInput>,
+) -> Result<SubAgentResult> {
+    let child_backend = match runtime.context.sandbox_backend.as_ref() {
+        Some(backend) => {
+            let role = assignment
+                .role
+                .as_deref()
+                .filter(|role| !role.trim().is_empty())
+                .unwrap_or(agent_type.as_str());
+            backend
+                .for_child(role, &prompt)
+                .map_err(|err| anyhow!("sub-agent authority could not be delegated: {err}"))?
+        }
+        None => None,
+    };
+    let child_runtime = child_backend.as_ref().map(|child| {
+        let mut child_runtime = runtime.clone();
+        child_runtime.context.sandbox_backend = Some(Arc::clone(child));
+        child_runtime
+    });
+    // Bounded context instead of a transcript: the session's memory hits
+    // for this task go into the authority layer's memory graph, and the
+    // child gets back only what its projected World may see.
+    let prompt = match child_backend.as_ref() {
+        Some(child) => {
+            let notes = session_memory_notes(runtime, &prompt);
+            match child.child_context(&prompt, &notes).await {
+                Ok(Some(brief)) => format!("{prompt}\n\n{brief}"),
+                Ok(None) => prompt,
+                Err(err) => {
+                    tracing::warn!(target: "subagent", ?err, agent_id, "sub-agent context was not compiled");
+                    prompt
+                }
+            }
+        }
+        None => prompt,
+    };
+    let result = run_subagent_in(
+        child_runtime.as_ref().unwrap_or(runtime),
+        agent_id.clone(),
+        agent_type,
+        prompt,
+        assignment,
+        allowed_tools,
+        fork_context,
+        started_at,
+        max_steps,
+        token_budget,
+        turn_end_parking,
+        input_rx,
+    )
+    .await;
+    if let Some(child) = child_backend {
+        let (summary, succeeded) = match &result {
+            Ok(outcome) => (
+                outcome.result.as_deref(),
+                matches!(outcome.status, SubAgentStatus::Completed),
+            ),
+            Err(_) => (None, false),
+        };
+        // Token accounting stays in Codewhale's own usage record; the join
+        // carries the child's conclusion and outcome.
+        if let Err(err) = child.child_joined(summary, 0, succeeded).await {
+            tracing::warn!(target: "subagent", ?err, agent_id, "sub-agent join was not recorded");
+        }
+    }
+    result
+}
+
+/// The session's native-memory hits for a task, as notes a child backend
+/// may import. Empty when memory is off or the store has nothing.
+fn session_memory_notes(
+    runtime: &SubAgentRuntime,
+    task: &str,
+) -> Vec<crate::sandbox::backend::MemoryNote> {
+    let Some(memory_path) = runtime.context.memory_path.as_deref() else {
+        return Vec::new();
+    };
+    let store = crate::commands::native_store_from_memory_path(memory_path);
+    match store.search_for_workspace(&runtime.context.workspace, task, 12) {
+        Ok(hits) => hits
+            .into_iter()
+            .filter(|hit| !hit.stale)
+            .map(|hit| crate::sandbox::backend::MemoryNote {
+                key: format!(
+                    "{}:{}-{}",
+                    hit.source.display(),
+                    hit.line_start,
+                    hit.line_end
+                ),
+                content: hit.text,
+                source: format!(
+                    "codewhale-memory:{}:{}-{}",
+                    hit.source.display(),
+                    hit.line_start,
+                    hit.line_end
+                ),
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_subagent_in(
     runtime: &SubAgentRuntime,
     agent_id: String,
     agent_type: FleetRole,

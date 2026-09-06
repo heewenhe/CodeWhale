@@ -211,6 +211,7 @@ pub(crate) fn key_to_message_id(key: &'static str) -> Option<MessageId> {
         "cmd_model_description" => MessageId::CmdModelDescription,
         "cmd_models_description" => MessageId::CmdModelsDescription,
         "cmd_network_description" => MessageId::CmdNetworkDescription,
+        "cmd_shannon_description" => MessageId::CmdShannonDescription,
         "cmd_new_description" => MessageId::CmdNewDescription,
         "cmd_note_description" => MessageId::CmdNoteDescription,
         "cmd_permissions_description" => MessageId::CmdPermissionsDescription,
@@ -1937,7 +1938,9 @@ pub(crate) struct MemoryAdapter<'a> {
 
 /// Derive the authoritative native-memory store from the resolved user-memory
 /// file path, mirroring the pre-migration `/memory` handler exactly.
-fn native_store_from_memory_path(memory_path: &Path) -> crate::native_memory::NativeMemoryStore {
+pub(crate) fn native_store_from_memory_path(
+    memory_path: &Path,
+) -> crate::native_memory::NativeMemoryStore {
     if let Some(store) = crate::native_memory::NativeMemoryStore::from_global_path(memory_path) {
         return store;
     }

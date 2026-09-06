@@ -495,6 +495,7 @@
   "ModelsSourceFallback": "Mô hình đi kèm hoặc đã cấu hình; chưa xác minh tính khả dụng.",
   "CmdModelDbDescription": "Duyệt cơ sở dữ liệu mô hình tích hợp",
   "CmdNetworkDescription": "Quản lý các quy tắc cho phép và từ chối mạng",
+  "CmdShannonDescription": "Inspect this session's ShannonNet World, capabilities, children, and receipts",
   "CmdUpdateDescription": "Kiểm tra và cài đặt bản phát hành Codewhale mới",
   "CmdNoteDescription": "Thêm, liệt kê, sửa hoặc xóa ghi chú trong không gian làm việc",
   "CmdThemeDescription": "Chuyển đổi giao diện hoặc mở bảng chọn giao diện",

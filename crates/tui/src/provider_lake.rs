@@ -273,12 +273,37 @@ pub fn live_catalog_origin(provider: ApiProvider, wire_model_id: &str) -> Option
 }
 
 /// Serialize tests that mutate the process-wide live snapshot.
+///
+/// Lock ordering: this takes the test env barrier FIRST (skipped when the
+/// calling thread already sealed the environment). Under `#[cfg(test)]` every
+/// `codewhale_env_var` read blocks on that barrier, so a thread holding the
+/// live-snapshot mutex while it waits for the barrier deadlocks against a
+/// thread holding the barrier while it waits for this mutex — and libtest has
+/// no per-test timeout, so one inverted pair hangs the whole test binary.
+/// Acquiring the barrier here, before the mutex, makes that inversion
+/// impossible for every caller at once.
 #[cfg(test)]
-pub(crate) fn lock_live_snapshot() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) struct LiveSnapshotLock {
+    _live: std::sync::MutexGuard<'static, ()>,
+    _env: Option<crate::test_support::TestEnvLock>,
+}
+
+#[cfg(test)]
+pub(crate) fn lock_live_snapshot() -> LiveSnapshotLock {
+    let env = if crate::test_support::current_thread_holds_test_env_lock() {
+        None
+    } else {
+        Some(crate::test_support::lock_test_env())
+    };
     static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    let live = LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    LiveSnapshotLock {
+        _live: live,
+        _env: env,
+    }
 }
 
 /// The merged catalog snapshot: live rows override bundled rows on

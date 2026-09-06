@@ -492,6 +492,7 @@
   "ModelsSourceFallback": "Встроенные или настроенные модели; доступность не проверена.",
   "CmdModelDbDescription": "Просмотр встроенной базы моделей",
   "CmdNetworkDescription": "Управление правилами разрешения и запрета сети",
+  "CmdShannonDescription": "Inspect this session's ShannonNet World, capabilities, children, and receipts",
   "CmdUpdateDescription": "Проверить и установить новый выпуск Codewhale",
   "CmdNoteDescription": "Добавить, показать, изменить или удалить заметки рабочей области",
   "CmdThemeDescription": "Сменить тему или открыть выбор темы",

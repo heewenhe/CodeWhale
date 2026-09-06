@@ -871,6 +871,9 @@ async fn readonly_shell_refuses_raw_string_external_backend() {
     struct Backend(std::sync::atomic::AtomicBool);
     #[async_trait::async_trait]
     impl crate::sandbox::backend::SandboxBackend for Backend {
+        fn kind(&self) -> crate::sandbox::backend::SandboxKind {
+            crate::sandbox::backend::SandboxKind::OpenSandbox
+        }
         async fn exec(
             &self,
             _cmd: &str,
@@ -904,6 +907,9 @@ async fn lowercase_bash_refuses_non_streaming_external_backend() {
     struct Backend(std::sync::atomic::AtomicBool);
     #[async_trait::async_trait]
     impl crate::sandbox::backend::SandboxBackend for Backend {
+        fn kind(&self) -> crate::sandbox::backend::SandboxKind {
+            crate::sandbox::backend::SandboxKind::OpenSandbox
+        }
         async fn exec(
             &self,
             _cmd: &str,

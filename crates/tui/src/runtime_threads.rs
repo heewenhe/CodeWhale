@@ -3069,19 +3069,48 @@ impl RuntimeProcessOwnerLock {
         })?;
         #[cfg(unix)]
         {
-            use std::os::fd::AsRawFd as _;
             use std::os::unix::fs::PermissionsExt as _;
             file.set_permissions(fs::Permissions::from_mode(0o600))
                 .context("Failed to protect Runtime process owner lock")?;
+        }
+        // Same-process drop-then-reopen can observe WouldBlock for a brief
+        // window while the previous fd is still closing — the same close-
+        // release race #5735 hit on the Runtime Chat scope lock. Retry only
+        // that contention; a lock that stays held still belongs to its owner.
+        let deadline = Instant::now() + Duration::from_millis(25);
+        loop {
+            match Self::try_lock_exclusive(&file) {
+                Ok(()) => break,
+                Err(error) if Self::is_contention(&error) => {
+                    if Instant::now() >= deadline {
+                        bail!("{RUNTIME_PROCESS_OWNER_LOCK_HELD}");
+                    }
+                    std::thread::yield_now();
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => {
+                    return Err(error).context("Failed to acquire Runtime process owner lock");
+                }
+            }
+        }
+        Ok(Self { _file: file })
+    }
+
+    fn is_contention(error: &std::io::Error) -> bool {
+        error.kind() == std::io::ErrorKind::WouldBlock
+            || matches!(error.raw_os_error(), Some(32 | 33))
+    }
+
+    fn try_lock_exclusive(file: &File) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd as _;
             // SAFETY: `file` owns a valid descriptor and is retained by this
             // guard for the entire RuntimeThreadManager lifetime.
             if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-                let error = std::io::Error::last_os_error();
-                if error.kind() == std::io::ErrorKind::WouldBlock {
-                    bail!("{RUNTIME_PROCESS_OWNER_LOCK_HELD}");
-                }
-                return Err(error).context("Failed to acquire Runtime process owner lock");
+                return Err(std::io::Error::last_os_error());
             }
+            Ok(())
         }
         #[cfg(windows)]
         {
@@ -3089,14 +3118,39 @@ impl RuntimeProcessOwnerLock {
             use windows_sys::Win32::Storage::FileSystem::LockFile;
             // SAFETY: `file` owns a valid handle retained by this guard.
             if unsafe { LockFile(file.as_raw_handle() as _, 0, 0, u32::MAX, u32::MAX) } == 0 {
-                let error = std::io::Error::last_os_error();
-                if matches!(error.raw_os_error(), Some(32 | 33)) {
-                    bail!("{RUNTIME_PROCESS_OWNER_LOCK_HELD}");
-                }
-                return Err(error).context("Failed to acquire Runtime process owner lock");
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = file;
+            Ok(())
+        }
+    }
+}
+
+impl Drop for RuntimeProcessOwnerLock {
+    fn drop(&mut self) {
+        // close() also releases, but unlocking first lets a same-process
+        // reopen proceed without racing the previous fd's teardown (#5735).
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd as _;
+            // SAFETY: Drop runs only while `_file` still owns this descriptor.
+            unsafe {
+                libc::flock(self._file.as_raw_fd(), libc::LOCK_UN);
             }
         }
-        Ok(Self { _file: file })
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows_sys::Win32::Storage::FileSystem::UnlockFile;
+            // SAFETY: Drop runs only while `_file` still owns this handle.
+            unsafe {
+                UnlockFile(self._file.as_raw_handle() as _, 0, 0, u32::MAX, u32::MAX);
+            }
+        }
     }
 }
 

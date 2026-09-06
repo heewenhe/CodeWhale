@@ -146,6 +146,7 @@ function deriveProvidersFromConfig(cfg: string): ProviderFact[] {
     Google: { id: "google", label: "Google Gemini", env: "GOOGLE_API_KEY / GEMINI_API_KEY" },
     Edenai: { id: "edenai", label: "Eden AI", env: "EDENAI_API_KEY" },
     Concentrate: { id: "concentrate", label: "Concentrate", env: "CONCENTRATE_API_KEY" },
+    Codewhale: { id: "codewhale", label: "Codewhale", env: "CODEWHALE_API_KEY" },
     ModelstudioTokenPlan: { id: "modelstudio-token-plan", label: "Model Studio Token Plan", env: "MODELSTUDIO_API_KEY" },
     ModelstudioTokenPlanAnthropic: { id: "modelstudio-token-plan-anthropic", label: "Model Studio Token Plan (Anthropic-compatible)", env: "MODELSTUDIO_API_KEY" },
     ModelstudioCodingPlan: { id: "modelstudio-coding-plan", label: "Model Studio Coding Plan", env: "MODELSTUDIO_API_KEY" },

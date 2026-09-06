@@ -7,6 +7,7 @@
 //! fall-through behaviour.
 
 mod contract;
+pub(crate) use contract::native_store_from_memory_path;
 pub mod discovery;
 mod groups;
 pub mod traits;
@@ -2044,6 +2045,8 @@ mod tests {
             "network",
             "task",
             "update",
+            // ShannonNet session inspection (utility group, portable handler).
+            "shannon",
             // FEAT-021 project group.
             "init",
             "lsp",

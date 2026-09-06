@@ -10043,11 +10043,11 @@ verbosity = "project-imported"
             .map(|provider| provider.kind())
             .collect();
         // Full registry keeps legacy dialect/plan kinds; ALL is the catalog surface.
-        assert_eq!(registry_kinds.len(), 48);
+        assert_eq!(registry_kinds.len(), 49);
         // The tombstone stays in the registry (old config must still parse
         // and clear) and left the catalog surface when it stopped being
         // selectable.
-        assert_eq!(ProviderKind::ALL.len(), 42);
+        assert_eq!(ProviderKind::ALL.len(), 43);
         for kind in ProviderKind::ALL {
             assert!(
                 registry_kinds.contains(&kind),

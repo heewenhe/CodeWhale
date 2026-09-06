@@ -4,6 +4,7 @@
 anthropic
 arcee
 atlascloud
+codewhale
 concentrate
 custom
 deepinfra
