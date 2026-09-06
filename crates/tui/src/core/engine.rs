@@ -1646,12 +1646,13 @@ impl Engine {
         // External sandbox backend (#516). Logged but non-fatal: if the
         // backend fails to construct, the engine continues with local
         // execution as the fallback.
-        let sandbox_backend = crate::sandbox::backend::create_backend(api_config)
-            .unwrap_or_else(|e| {
-                tracing::warn!("Failed to create sandbox backend: {e}");
-                None
-            })
-            .map(std::sync::Arc::from);
+        let sandbox_backend =
+            crate::sandbox::backend::create_backend(api_config, &config.workspace)
+                .unwrap_or_else(|e| {
+                    tracing::warn!("Failed to create sandbox backend: {e}");
+                    None
+                })
+                .map(std::sync::Arc::from);
         let sandbox_enforcement = if sandbox_backend.is_some() {
             crate::sandbox::policy::SandboxEnforcement::ExternalBackend
         } else if crate::sandbox::get_platform_sandbox_with_bwrap_preference(config.prefer_bwrap)

@@ -194,6 +194,35 @@ pub fn opencode_zen_picker_models() -> Vec<&'static str> {
     models
 }
 
+/// Codewhale API bootstrap rows used only when the account's live
+/// `GET {base}/models` cannot be fetched.
+///
+/// The account catalog is authoritative: it lists exactly the providers the
+/// customer connected, and each row states its own protocol. These three rows
+/// exist so a route can still be selected offline; every consumer that shows
+/// models must say the list is a fallback, not the account's catalog.
+pub const CODEWHALE_FALLBACK_MODELS: &[&str] = &[
+    "deepseek/deepseek-v4-pro",
+    "anthropic/claude-sonnet-5",
+    "openai/gpt-5.6",
+];
+
+/// Endpoint key for one Codewhale API model id.
+///
+/// The live catalog states the protocol per model in `codewhale.protocol`;
+/// this is the offline inference used for the bootstrap rows and for a model
+/// id the local catalog has never seen. Only the `anthropic/` namespace routes
+/// to `{base}/messages`; everything else is OpenAI Chat Completions at
+/// `{base}/chat/completions`.
+#[must_use]
+pub fn codewhale_endpoint_key_for_model(model: &str) -> &'static str {
+    if model.trim().to_ascii_lowercase().starts_with("anthropic/") {
+        "messages"
+    } else {
+        "chat"
+    }
+}
+
 /// Return curated provider/model transport facts as owned offering rows.
 ///
 /// OpenCode Zen's official catalog serves models over three protocol families.
@@ -289,6 +318,25 @@ pub fn bundled_offerings() -> Vec<ProviderModelOffering> {
             pricing: PricingSku::UnknownOrStale,
         })
     }));
+
+    // Codewhale API bootstrap rows. The account's authenticated
+    // `GET {base}/models` is the catalog authority and replaces these as soon
+    // as it is reachable; they exist so the route resolves offline.
+    let codewhale = ProviderId::from("codewhale");
+    offerings.extend(
+        CODEWHALE_FALLBACK_MODELS
+            .iter()
+            .map(|model| ProviderModelOffering {
+                provider: codewhale.clone(),
+                canonical_model: None,
+                wire_model_id: WireModelId::from(*model),
+                endpoint_key: codewhale_endpoint_key_for_model(model).to_string(),
+                default_for_provider: *model == crate::DEFAULT_CODEWHALE_MODEL,
+                limits: RouteLimits::default(),
+                capabilities: RouteCapabilities::default(),
+                pricing: PricingSku::UnknownOrStale,
+            }),
+    );
 
     // Alibaba Cloud Model Studio — one vendor identity in the hand seam
     // (`modelstudio-token-plan`). Plan (token vs coding) and wire dialect

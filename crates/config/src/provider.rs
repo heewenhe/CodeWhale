@@ -8,8 +8,9 @@
 use super::{
     DEFAULT_ANTIGRAVITY_BASE_URL, DEFAULT_ANTIGRAVITY_MODEL, DEFAULT_ARCEE_BASE_URL,
     DEFAULT_ARCEE_MODEL, DEFAULT_ATLASCLOUD_BASE_URL, DEFAULT_ATLASCLOUD_MODEL,
-    DEFAULT_CONCENTRATE_BASE_URL, DEFAULT_CONCENTRATE_MODEL, DEFAULT_DEEPINFRA_BASE_URL,
-    DEFAULT_DEEPINFRA_MODEL, DEFAULT_DEEPSEEK_ANTHROPIC_BASE_URL, DEFAULT_DEEPSEEK_ANTHROPIC_MODEL,
+    DEFAULT_CODEWHALE_BASE_URL, DEFAULT_CODEWHALE_MODEL, DEFAULT_CONCENTRATE_BASE_URL,
+    DEFAULT_CONCENTRATE_MODEL, DEFAULT_DEEPINFRA_BASE_URL, DEFAULT_DEEPINFRA_MODEL,
+    DEFAULT_DEEPSEEK_ANTHROPIC_BASE_URL, DEFAULT_DEEPSEEK_ANTHROPIC_MODEL,
     DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_MODEL, DEFAULT_EDENAI_BASE_URL,
     DEFAULT_EDENAI_MODEL, DEFAULT_FIREWORKS_BASE_URL, DEFAULT_FIREWORKS_MODEL,
     DEFAULT_GOOGLE_BASE_URL, DEFAULT_GOOGLE_MODEL, DEFAULT_HUGGINGFACE_BASE_URL,
@@ -144,6 +145,47 @@ pub const KIMI_CODE_MEMBERSHIP_PLAN_CONSOLE_URL: &str = "https://www.kimi.com/co
 
 /// Ollama's account page for creating API keys used by the hosted API.
 pub const OLLAMA_CLOUD_API_KEY_URL: &str = "https://ollama.com/settings/keys";
+
+/// Codewhale account page for minting a `cwc_key_…` API key.
+///
+/// The Codewhale API route needs a key carrying the `models:infer` scope; the
+/// same page is both the credential console and the scope documentation.
+pub const CODEWHALE_API_KEY_URL: &str = "https://app.codewhale.net/settings?section=api";
+
+/// Environment variable that overrides the Codewhale API base URL.
+///
+/// Mirrors `CODEWHALE_CLOUD_API_BASE` for the account control plane: HTTPS is
+/// required except for loopback HTTP, so a test harness can point the route at
+/// a local stub without ever enabling cleartext to a remote host.
+pub const CODEWHALE_API_BASE_ENV: &str = "CODEWHALE_API_BASE";
+
+/// Resolve the Codewhale API base URL from the environment.
+///
+/// Returns `None` when the variable is unset, empty, or names an origin this
+/// route refuses to send a `cwc_key_…` bearer to. A bearer token has no replay
+/// protection, so cleartext is allowed only on loopback — the same rule the
+/// account control plane applies to `CODEWHALE_CLOUD_API_BASE`.
+#[must_use]
+pub fn codewhale_api_base_from_env() -> Option<String> {
+    let raw = std::env::var(CODEWHALE_API_BASE_ENV).ok()?;
+    codewhale_api_base(&raw)
+}
+
+/// Validate one candidate Codewhale API base URL. See [`codewhale_api_base_from_env`].
+#[must_use]
+pub fn codewhale_api_base(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (scheme, host, has_credentials) = crate::device_code::url_scheme_and_host(trimmed).ok()?;
+    if has_credentials {
+        return None;
+    }
+    let allowed =
+        scheme == "https" || (scheme == "http" && crate::device_code::is_loopback_host(&host));
+    allowed.then(|| trimmed.to_string())
+}
 
 /// Ollama Cloud's exact OpenAI-compatible API base URL.
 pub const OLLAMA_CLOUD_BASE_URL: &str = DEFAULT_OLLAMA_CLOUD_BASE_URL;
@@ -438,6 +480,12 @@ pub const fn credential_help(kind: ProviderKind) -> CredentialHelp {
             credential_url: Some("https://app.edenai.run/settings/api-keys"),
             docs_url: Some("https://www.edenai.co/docs"),
             guidance: "Create an Eden AI API key from the Eden AI dashboard, then select models by their provider/model namespaced id.",
+        },
+        ProviderKind::Codewhale => CredentialHelp {
+            acquisition: ApiKey,
+            credential_url: Some(CODEWHALE_API_KEY_URL),
+            docs_url: Some("https://app.codewhale.net/settings?section=api"),
+            guidance: "Create an API key with the models:infer scope at https://app.codewhale.net/settings?section=api",
         },
         ProviderKind::Concentrate => CredentialHelp {
             acquisition: ApiKey,
@@ -1365,6 +1413,59 @@ impl Provider for OpencodeZen {
     }
 }
 
+/// Codewhale API — account-backed model access with a model-scoped wire.
+///
+/// One base URL and one `cwc_key_…` account API key with the `models:infer`
+/// scope. The account's authenticated `GET {base}/models` is the catalog
+/// authority: each row is `provider/model` and carries the protocol
+/// (`chat-completions` → `{base}/chat/completions`, `anthropic-messages` →
+/// `{base}/messages`). Both protocols authenticate with `Authorization:
+/// Bearer`; the Anthropic passthrough deliberately does not take `x-api-key`.
+pub struct Codewhale;
+
+impl Provider for Codewhale {
+    fn id(&self) -> &'static str {
+        "codewhale"
+    }
+
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Codewhale
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Codewhale"
+    }
+
+    fn default_base_url(&self) -> &'static str {
+        DEFAULT_CODEWHALE_BASE_URL
+    }
+
+    fn default_model(&self) -> &'static str {
+        DEFAULT_CODEWHALE_MODEL
+    }
+
+    fn env_vars(&self) -> &'static [&'static str] {
+        &["CODEWHALE_API_KEY"]
+    }
+
+    fn provider_config_key(&self) -> &'static str {
+        "codewhale"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &[
+            "codewhale-api",
+            "codewhale_api",
+            "cw-api",
+            "codewhale-cloud",
+        ]
+    }
+
+    fn wire_policy(&self) -> WirePolicy {
+        WirePolicy::ModelAware
+    }
+}
+
 provider!(
     Meta,
     Meta,
@@ -1762,6 +1863,7 @@ static ANTIGRAVITY: Antigravity = Antigravity;
 static TELECOMJS: Telecomjs = Telecomjs;
 static EDENAI: Edenai = Edenai;
 static CONCENTRATE: Concentrate = Concentrate;
+static CODEWHALE: Codewhale = Codewhale;
 static MODELSTUDIO_TOKEN_PLAN: ModelstudioTokenPlan = ModelstudioTokenPlan;
 static MODELSTUDIO_TOKEN_PLAN_ANTHROPIC: ModelstudioTokenPlanAnthropic =
     ModelstudioTokenPlanAnthropic;
@@ -1770,7 +1872,7 @@ static MODELSTUDIO_CODING_PLAN_ANTHROPIC: ModelstudioCodingPlanAnthropic =
     ModelstudioCodingPlanAnthropic;
 static CUSTOM: Custom = Custom;
 
-static PROVIDER_REGISTRY: [&dyn Provider; 48] = [
+static PROVIDER_REGISTRY: [&dyn Provider; 49] = [
     &DEEPSEEK,
     &DEEPSEEK_ANTHROPIC,
     &NVIDIA_NIM,
@@ -1812,6 +1914,7 @@ static PROVIDER_REGISTRY: [&dyn Provider; 48] = [
     &TELECOMJS,
     &EDENAI,
     &CONCENTRATE,
+    &CODEWHALE,
     &MODELSTUDIO_TOKEN_PLAN,
     &MODELSTUDIO_TOKEN_PLAN_ANTHROPIC,
     &MODELSTUDIO_CODING_PLAN,

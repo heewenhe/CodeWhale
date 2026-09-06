@@ -207,7 +207,7 @@ pub fn validate_browser_verification_uri(raw: &str, context: &str) -> Result<Str
 
 /// Minimal scheme/host/credential split, so this module stays free of a URL
 /// dependency (`codewhale-config` deliberately has no `reqwest`/`url`).
-fn url_scheme_and_host(raw: &str) -> Result<(String, String, bool), ()> {
+pub(crate) fn url_scheme_and_host(raw: &str) -> Result<(String, String, bool), ()> {
     let (scheme, rest) = raw.split_once("://").ok_or(())?;
     if scheme.is_empty()
         || !scheme
@@ -240,7 +240,7 @@ fn url_scheme_and_host(raw: &str) -> Result<(String, String, bool), ()> {
     ))
 }
 
-fn is_loopback_host(host: &str) -> bool {
+pub(crate) fn is_loopback_host(host: &str) -> bool {
     if host == "localhost" || host == "::1" {
         return true;
     }

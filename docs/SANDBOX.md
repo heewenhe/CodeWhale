@@ -18,6 +18,7 @@ run before execution reaches this boundary.
 | No OS wrapper | Linux without usable opt-in bwrap | Default | `none` |
 | No OS wrapper | Windows | Current implementation | `none` |
 | OpenSandbox-compatible service | Any supported host | `sandbox_backend = "opensandbox"` | External execution path |
+| ShannonNet worker (signed capability invocation, any tailnet node) | Any supported host with the `shannon` CLI | `sandbox_backend = "shannon"` | External execution path |
 
 The repository contains a seccomp implementation module plus a future Windows
 helper contract. They are not wired into child-command launch, so Codewhale
@@ -148,6 +149,68 @@ sandbox_api_key = "YOUR_API_KEY"
 
 `sandbox_backend = "none"` (or omitting the key) keeps local execution.
 
+## External ShannonNet execution
+
+When `sandbox_backend = "shannon"` is configured, each shell command becomes
+one signed `cap://sandbox/exec` invocation through the `shannon` CLI. The
+worker that executes it is whichever admitted provider the ShannonNet router
+selects — typically a `shannon-worker --kind docker` or a
+`shannon-tsnet-worker` on another tailnet node — and Codewhale never learns
+its address. At session start Codewhale resolves its durable `codewhale`
+Agent (creating it once), creates a Task World named after the workspace, and
+attaches the capability; the worker verifies that grant chain, executes in a
+network-less, resource-capped container, and returns stdout, stderr, and the
+exit code inside a signed receipt. `shannon trace <task>` lists every command
+with the provider and transport evidence that served it.
+
+With `sandbox_shannon_sync = true` (the default) the worker keeps one
+writable session container per Task World and Codewhale ships the session's
+working tree into it before each command: the full non-ignored tree the
+first time (`.gitignore`, local and global excludes, and `.git` itself are
+honored; symlinks and files over 16 MiB are skipped), then only added or
+modified files and deletions, chunked at 6 MiB per request. Commands run in
+that `/work` with what the Engine just edited locally, and what they write
+persists for the next command, so remote builds and test suites work.
+The worker refuses path traversal, absolute paths, symlinks, and archives
+over its size budget, destroys the session when the backend drops or after
+an idle TTL, and never exposes its own checkout to the session. A failed
+sync fails the command rather than running it on a stale tree.
+
+Sub-agents run under delegated authority. When the `agent` tool spawns a
+child, the backend spawns a ShannonNet child identity certified by the
+session's `codewhale` Agent, with a World projected from the session World
+that exposes only the sandbox capability (delegation depth attenuated); the
+child's shell commands are signed as that child in that World and ship into
+the child's own session container. When the child finishes, a join receipt
+(its final summary and outcome) is recorded on the task and the child's
+World is destroyed. A delegation that cannot be established fails the spawn
+rather than running the child as the session principal. Backends without
+delegated authority (OpenSandbox) share the parent's backend as before.
+
+Children also get bounded context instead of a transcript: the session's
+native-memory hits for the task (when `[memory]` is enabled) are imported
+into the `codewhale` Agent's memory graph with provenance, and ShannonNet
+compiles what the child's projected World may see — confidential notes
+never cross into it — into a short block appended to the child's prompt,
+with the compiler's information-flow notes and context hash.
+
+Session end closes the World: dropping the session backend runs a
+content-addressed checkpoint, destroys the World, and tears down the
+worker's session container, detached. `/shannon [world|trace|children]`
+inspects the live session: the Agent, the capabilities projected into the
+World with their grant depth, the agent tree, and the receipts on the task.
+
+```toml
+sandbox_backend = "shannon"
+sandbox_shannon_home = "~/.shannon"                 # default: $SHANNON_HOME or ~/.shannon
+sandbox_shannon_capability = "cap://sandbox/exec"   # default
+sandbox_shannon_sync = true                         # default
+```
+
+The `shannon` binary comes from `$SHANNON` or `PATH`. Isolation belongs to
+the worker; Codewhale validates the receipt contract. Background, interactive,
+and TTY modes are unsupported, as with every external backend.
+
 ## Policies and fallbacks
 
 The local `sandbox_mode` values are:
@@ -173,6 +236,8 @@ backend:
 
 - `CODEWHALE_SANDBOX_MODE`
 - `CODEWHALE_SANDBOX_BACKEND`
+- `CODEWHALE_SANDBOX_SHANNON_HOME`, `CODEWHALE_SANDBOX_SHANNON_CAPABILITY`,
+  `CODEWHALE_SANDBOX_SHANNON_SYNC`
 - `CODEWHALE_SANDBOX_URL`
 - `CODEWHALE_SANDBOX_API_KEY`
 

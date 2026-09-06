@@ -197,6 +197,8 @@ drives turns through Chat Completions.
     execution to a remote service, e.g. Alibaba OpenSandbox)
   - `policy.rs` - Sandbox policy configuration
   - `opensandbox.rs` - Alibaba OpenSandbox HTTP backend adapter
+  - `shannon.rs` - ShannonNet backend: signed capability invocations through
+    the `shannon` CLI, one Task World per session
   - `seatbelt.rs` - macOS Seatbelt profile generation
   - `bwrap.rs` - opt-in Linux bubblewrap command wrapper
   - `seccomp.rs` - dormant Linux seccomp implementation; not wired into commands

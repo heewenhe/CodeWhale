@@ -495,6 +495,7 @@
   "ModelsSourceFallback": "内置或已配置的模型；尚未验证可用性。",
   "CmdModelDbDescription": "参考：浏览内置的模型数据库",
   "CmdNetworkDescription": "管理网络允许和拒绝规则",
+  "CmdShannonDescription": "Inspect this session's ShannonNet World, capabilities, children, and receipts",
   "CmdUpdateDescription": "检查并安装新的 Codewhale 版本",
   "CmdNoteDescription": "添加、列出、编辑或删除工作区笔记",
   "CmdThemeDescription": "切换主题或打开主题选择器",

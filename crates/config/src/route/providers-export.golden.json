@@ -87,6 +87,24 @@
       "transport": "chat-completions"
     },
     {
+      "id": "codewhale",
+      "family": "codewhale",
+      "label": "Codewhale",
+      "endpoint": "https://api.codewhale.net/v1",
+      "wire": "model-aware",
+      "defaultModel": "deepseek/deepseek-v4-pro",
+      "envVars": [
+        "CODEWHALE_API_KEY"
+      ],
+      "auth": [
+        {
+          "kind": "api-key",
+          "label": "API key"
+        }
+      ],
+      "transport": "model-aware"
+    },
+    {
       "id": "concentrate",
       "family": "concentrate",
       "label": "Concentrate",

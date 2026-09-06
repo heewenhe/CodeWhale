@@ -650,7 +650,20 @@ fn key_names_are_checked_locally_against_the_server_pattern() {
 
 #[test]
 fn scopes_are_normalized_against_the_closed_set() {
-    assert_eq!(validate_scopes(&[]).unwrap(), None);
+    // Omitting --scope means every scope, sent explicitly rather than left
+    // to whatever the control plane defaults to.
+    assert_eq!(
+        validate_scopes(&[]).unwrap(),
+        Some(vec![
+            "account:read".to_string(),
+            "agent:run".to_string(),
+            "models:infer".to_string(),
+        ])
+    );
+    assert_eq!(
+        validate_scopes(&["models:infer".into()]).unwrap(),
+        Some(vec!["models:infer".to_string()])
+    );
     assert_eq!(
         validate_scopes(&[
             "agent:run".into(),

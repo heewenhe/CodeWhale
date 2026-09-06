@@ -122,6 +122,8 @@ pub enum ApiProvider {
     Edenai,
     /// Concentrate — OpenAI Responses-compatible AI gateway (aggregator; BYOK only).
     Concentrate,
+    /// Codewhale API — account-backed model access over connected provider keys.
+    Codewhale,
     /// Alibaba Cloud Model Studio — Token Plan (OpenAI-compatible Chat Completions).
     ModelstudioTokenPlan,
     /// Alibaba Cloud Model Studio — Token Plan Anthropic-compatible endpoint.
@@ -365,7 +367,7 @@ impl ApiProvider {
 
     /// `ApiProvider` discriminant → `ProviderKind` lookup.
     /// Index 1 is `None` for the legacy `DeepseekCN` variant.
-    const KIND_LOOKUP: [Option<codewhale_config::ProviderKind>; 49] = [
+    const KIND_LOOKUP: [Option<codewhale_config::ProviderKind>; 50] = [
         Some(codewhale_config::ProviderKind::Deepseek),
         None, // DeepseekCN
         Some(codewhale_config::ProviderKind::DeepseekAnthropic),
@@ -410,6 +412,7 @@ impl ApiProvider {
         Some(codewhale_config::ProviderKind::Telecomjs),
         Some(codewhale_config::ProviderKind::Edenai),
         Some(codewhale_config::ProviderKind::Concentrate),
+        Some(codewhale_config::ProviderKind::Codewhale),
         Some(codewhale_config::ProviderKind::ModelstudioTokenPlan),
         Some(codewhale_config::ProviderKind::ModelstudioTokenPlanAnthropic),
         Some(codewhale_config::ProviderKind::ModelstudioCodingPlan),
@@ -418,7 +421,7 @@ impl ApiProvider {
     ];
 
     /// `ProviderKind` discriminant → `ApiProvider` lookup.
-    const FROM_KIND_LOOKUP: [Self; 48] = [
+    const FROM_KIND_LOOKUP: [Self; 49] = [
         Self::Deepseek,
         Self::DeepseekAnthropic,
         Self::NvidiaNim,
@@ -466,6 +469,7 @@ impl ApiProvider {
         Self::Google,
         Self::Edenai,
         Self::Concentrate,
+        Self::Codewhale,
         Self::Custom,
     ];
 
@@ -537,6 +541,10 @@ fn subagent_provider_key_matches(key: &str, provider: ApiProvider) -> bool {
         ApiProvider::Concentrate => matches!(
             normalized.as_str(),
             "concentrate" | "concentrate_ai" | "concentrateai"
+        ),
+        ApiProvider::Codewhale => matches!(
+            normalized.as_str(),
+            "codewhale" | "codewhale_api" | "cw_api" | "codewhale_cloud"
         ),
         ApiProvider::OpenaiCodex => matches!(
             normalized.as_str(),
@@ -1697,6 +1705,10 @@ pub fn model_completion_names_for_provider(provider: ApiProvider) -> Vec<&'stati
         ApiProvider::Antigravity => Vec::new(),
         ApiProvider::Edenai => vec![DEFAULT_EDENAI_MODEL],
         ApiProvider::Concentrate => vec![DEFAULT_CONCENTRATE_MODEL],
+        // Bootstrap rows only. The account's authenticated `GET /v1/models`
+        // lists exactly the providers this customer connected and replaces
+        // these as soon as it is reachable.
+        ApiProvider::Codewhale => codewhale_config::route::CODEWHALE_FALLBACK_MODELS.to_vec(),
         // Custom endpoints expose no built-in completion names; the user
         // supplies their own model id (#1519).
         ApiProvider::Custom => Vec::new(),
@@ -3086,9 +3098,9 @@ pub struct Config {
     pub fallback_providers: Vec<codewhale_config::ProviderKind>,
     pub yolo: Option<bool>,
     pub verbosity: Option<String>,
-    /// External sandbox backend: `"none"` or `"opensandbox"`.
-    /// When set, exec_shell routes commands through the backend's HTTP API
-    /// instead of spawning a local process.
+    /// External sandbox backend: `"none"`, `"opensandbox"`, or `"shannon"`.
+    /// When set, exec_shell routes commands through the backend instead of
+    /// spawning a local process.
     #[serde(alias = "sandboxBackend")]
     pub sandbox_backend: Option<String>,
     /// Base URL for the external sandbox backend (default: `"http://localhost:8080"`).
@@ -3097,6 +3109,19 @@ pub struct Config {
     /// Optional API key for the external sandbox backend (sent as Bearer token).
     #[serde(alias = "sandboxApiKey")]
     pub sandbox_api_key: Option<String>,
+    /// ShannonNet state directory for `sandbox_backend = "shannon"`
+    /// (default: `$SHANNON_HOME`, else `~/.shannon`).
+    #[serde(alias = "sandboxShannonHome")]
+    pub sandbox_shannon_home: Option<String>,
+    /// Capability invoked per shell command for `sandbox_backend = "shannon"`
+    /// (default: `cap://sandbox/exec`).
+    #[serde(alias = "sandboxShannonCapability")]
+    pub sandbox_shannon_capability: Option<String>,
+    /// Ship the workspace's non-ignored files to the worker's per-World
+    /// session before each command (default true). False runs commands
+    /// against the worker's own checkout in a throwaway container.
+    #[serde(alias = "sandboxShannonSync")]
+    pub sandbox_shannon_sync: Option<bool>,
     /// When true and `/usr/bin/bwrap` is executable on Linux, route exec_shell
     /// through bubblewrap (#2184).
     /// Defaults to false. Requires the `bubblewrap` package to be installed
@@ -4056,6 +4081,15 @@ pub struct ProvidersConfig {
         alias = "concentrateai"
     )]
     pub concentrate: ProviderConfig,
+    /// Codewhale API — account-backed model access over connected provider keys.
+    #[serde(
+        default,
+        alias = "codewhale-api",
+        alias = "codewhale_api",
+        alias = "cw-api",
+        alias = "codewhale-cloud"
+    )]
+    pub codewhale: ProviderConfig,
     /// Alibaba Cloud Model Studio — Token Plan (OpenAI-compatible Chat Completions).
     #[serde(default, alias = "modelstudio-token-plan")]
     pub modelstudio_token_plan: ProviderConfig,
@@ -5719,6 +5753,7 @@ impl Config {
             ApiProvider::Telecomjs => &providers.telecomjs,
             ApiProvider::Edenai => &providers.edenai,
             ApiProvider::Concentrate => &providers.concentrate,
+            ApiProvider::Codewhale => &providers.codewhale,
             ApiProvider::ModelstudioTokenPlan => &providers.modelstudio_token_plan,
             ApiProvider::ModelstudioTokenPlanAnthropic => {
                 &providers.modelstudio_token_plan_anthropic
@@ -5803,6 +5838,7 @@ impl Config {
             ApiProvider::Telecomjs => &mut providers.telecomjs,
             ApiProvider::Edenai => &mut providers.edenai,
             ApiProvider::Concentrate => &mut providers.concentrate,
+            ApiProvider::Codewhale => &mut providers.codewhale,
             ApiProvider::ModelstudioTokenPlan => &mut providers.modelstudio_token_plan,
             ApiProvider::ModelstudioTokenPlanAnthropic => {
                 &mut providers.modelstudio_token_plan_anthropic
@@ -6193,6 +6229,7 @@ impl Config {
             ApiProvider::Telecomjs => DEFAULT_TELECOMJS_MODEL,
             ApiProvider::Edenai => DEFAULT_EDENAI_MODEL,
             ApiProvider::Concentrate => DEFAULT_CONCENTRATE_MODEL,
+            ApiProvider::Codewhale => DEFAULT_CODEWHALE_MODEL,
             ApiProvider::ModelstudioTokenPlan
             | ApiProvider::ModelstudioTokenPlanAnthropic
             | ApiProvider::ModelstudioCodingPlan
@@ -6317,6 +6354,7 @@ impl Config {
             | ApiProvider::Telecomjs
             | ApiProvider::Edenai
             | ApiProvider::Concentrate
+            | ApiProvider::Codewhale
             | ApiProvider::ModelstudioTokenPlan
             | ApiProvider::ModelstudioTokenPlanAnthropic
             | ApiProvider::ModelstudioCodingPlan
@@ -6428,6 +6466,7 @@ impl Config {
                         ApiProvider::Telecomjs => DEFAULT_TELECOMJS_BASE_URL,
                         ApiProvider::Edenai => DEFAULT_EDENAI_BASE_URL,
                         ApiProvider::Concentrate => DEFAULT_CONCENTRATE_BASE_URL,
+                        ApiProvider::Codewhale => DEFAULT_CODEWHALE_BASE_URL,
                         ApiProvider::ModelstudioTokenPlan
                         | ApiProvider::ModelstudioTokenPlanAnthropic
                         | ApiProvider::ModelstudioCodingPlan
@@ -6723,6 +6762,14 @@ impl Config {
             return false;
         }
 
+        // The Codewhale API is authenticated on every origin it is allowed to
+        // reach. A loopback `CODEWHALE_API_BASE` is a test origin for that
+        // same contract, not a keyless local runtime, so it must not suppress
+        // the route's saved or exported key.
+        if provider == ApiProvider::Codewhale {
+            return false;
+        }
+
         provider_route_is_keyless_self_hosted(provider, &self.base_url_for_route(provider))
             || (provider == self.api_provider()
                 && base_url_uses_local_host(&self.deepseek_base_url()))
@@ -6972,7 +7019,13 @@ impl Config {
             }
         }
 
-        if !auth_mode_requires_api_key(auth_mode.as_deref())
+        // The Codewhale API always authenticates. It is not a self-hosted
+        // runtime, and a loopback `CODEWHALE_API_BASE` is a test origin for
+        // the same authenticated contract — never a keyless one. Without this
+        // the loopback arm below returned an empty key and the request went
+        // out with no `Authorization` header at all.
+        if provider != ApiProvider::Codewhale
+            && !auth_mode_requires_api_key(auth_mode.as_deref())
             && (provider_route_is_keyless_self_hosted(provider, &self.deepseek_base_url())
                 || base_url_uses_local_host(&self.deepseek_base_url()))
         {
@@ -6991,6 +7044,23 @@ impl Config {
         }
 
         match provider {
+            ApiProvider::Codewhale => anyhow::bail!(
+                "Codewhale API key not found, so no request was sent.\n\
+                 \n\
+                 The Codewhale API authenticates every model with one account \
+                 API key carrying the `models:infer` scope.\n\
+                 \n\
+                 1. Create one and save it on this machine:\n\
+                        codewhale account api-keys create --name <name> --scope models:infer --use\n\
+                 2. Or export it for this shell:\n\
+                        export CODEWHALE_API_KEY=cwc_key_...\n\
+                 \n\
+                 You can also create a key at {} and put it in \
+                 [providers.codewhale] api_key (or api_key_env).",
+                provider
+                    .credential_url()
+                    .unwrap_or("https://app.codewhale.net/settings?section=api")
+            ),
             ApiProvider::Deepseek | ApiProvider::DeepseekCN => anyhow::bail!(
                 "DeepSeek API key not found.\n\
                  \n\
@@ -7963,12 +8033,12 @@ fn root_deepseek_model_is_foreign_to_direct_provider(provider: ApiProvider, mode
 mod home;
 mod paths;
 use paths::{
-    canonicalize_or_keep, codewhale_home_dir, default_config_path, default_managed_config_path,
+    canonicalize_or_keep, default_config_path, default_managed_config_path,
     default_mcp_config_path, default_memory_path, default_notes_path, default_requirements_path,
     default_skills_dir, env_config_path, expand_pathbuf, home_config_path, try_default_config_path,
     workspace_config_key,
 };
-pub(crate) use paths::{effective_home_dir, expand_path};
+pub(crate) use paths::{codewhale_home_dir, effective_home_dir, expand_path};
 
 pub(crate) fn workspace_trust_config_candidate_paths() -> Vec<PathBuf> {
     #[cfg(test)]
@@ -8198,6 +8268,7 @@ fn provider_env_base_url_override(provider: ApiProvider) -> Option<String> {
         ApiProvider::Telecomjs => &["TELECOMJS_BASE_URL"],
         ApiProvider::Edenai => &["EDENAI_BASE_URL"],
         ApiProvider::Concentrate => &["CONCENTRATE_BASE_URL"],
+        ApiProvider::Codewhale => &["CODEWHALE_API_BASE"],
         ApiProvider::ModelstudioTokenPlan | ApiProvider::ModelstudioTokenPlanAnthropic => {
             &["MODELSTUDIO_TOKEN_PLAN_BASE_URL"]
         }
@@ -8223,6 +8294,16 @@ fn provider_env_base_url_override(provider: ApiProvider) -> Option<String> {
         | ApiProvider::LongCat
         | ApiProvider::Custom => &[],
     };
+    // `CODEWHALE_API_BASE` carries a `cwc_key_…` bearer, which has no replay
+    // protection, so it is a trust boundary rather than a plain string: an
+    // origin the account surface would refuse is dropped here instead of
+    // becoming a route, and the workspace-wide insecure-HTTP escape hatch
+    // deliberately does not reopen it.
+    if provider == ApiProvider::Codewhale {
+        return first_nonempty_env(names)
+            .as_deref()
+            .and_then(codewhale_config::provider::codewhale_api_base);
+    }
     first_nonempty_env(names)
 }
 
@@ -8577,6 +8658,13 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
                     .providers
                     .get_or_insert_with(ProvidersConfig::default)
                     .concentrate
+                    .base_url = Some(value);
+            }
+            ApiProvider::Codewhale => {
+                config
+                    .providers
+                    .get_or_insert_with(ProvidersConfig::default)
+                    .codewhale
                     .base_url = Some(value);
             }
             ApiProvider::ModelstudioTokenPlan => {
@@ -8952,6 +9040,7 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
                 ApiProvider::Telecomjs => &mut providers.telecomjs,
                 ApiProvider::Edenai => &mut providers.edenai,
                 ApiProvider::Concentrate => &mut providers.concentrate,
+                ApiProvider::Codewhale => &mut providers.codewhale,
                 ApiProvider::ModelstudioTokenPlan => &mut providers.modelstudio_token_plan,
                 ApiProvider::ModelstudioTokenPlanAnthropic => {
                     &mut providers.modelstudio_token_plan_anthropic
@@ -9340,6 +9429,7 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
                 ApiProvider::Telecomjs => &mut providers.telecomjs,
                 ApiProvider::Edenai => &mut providers.edenai,
                 ApiProvider::Concentrate => &mut providers.concentrate,
+                ApiProvider::Codewhale => &mut providers.codewhale,
                 ApiProvider::ModelstudioTokenPlan => &mut providers.modelstudio_token_plan,
                 ApiProvider::ModelstudioTokenPlanAnthropic => {
                     &mut providers.modelstudio_token_plan_anthropic
@@ -9457,6 +9547,15 @@ fn apply_env_overrides_unlocked(config: &mut Config, policy: ConfigEnvironmentPo
             .or_else(|_| std::env::var("DEEPSEEK_SANDBOX_API_KEY"))
     {
         config.sandbox_api_key = Some(value);
+    }
+    if let Ok(value) = std::env::var("CODEWHALE_SANDBOX_SHANNON_HOME") {
+        config.sandbox_shannon_home = Some(value);
+    }
+    if let Ok(value) = std::env::var("CODEWHALE_SANDBOX_SHANNON_CAPABILITY") {
+        config.sandbox_shannon_capability = Some(value);
+    }
+    if let Ok(value) = std::env::var("CODEWHALE_SANDBOX_SHANNON_SYNC") {
+        config.sandbox_shannon_sync = Some(value == "1" || value.eq_ignore_ascii_case("true"));
     }
     if let Ok(value) = std::env::var("CODEWHALE_MANAGED_CONFIG_PATH")
         .or_else(|_| std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH"))
@@ -9674,6 +9773,9 @@ pub(crate) fn provider_passes_model_through(provider: ApiProvider) -> bool {
             // Concentrate ids are gateway-owned (plain, `provider/model`, or the
             // gateway's own `auto`); the resolver strips only `concentrate/`.
             | ApiProvider::Concentrate
+            // Codewhale API ids are `provider/model` exactly as the account
+            // catalog returns them; never normalize or rewrite them.
+            | ApiProvider::Codewhale
             | ApiProvider::ModelstudioTokenPlan
             | ApiProvider::ModelstudioTokenPlanAnthropic
             | ApiProvider::ModelstudioCodingPlan
@@ -10616,6 +10718,15 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         sandbox_backend: override_cfg.sandbox_backend.or(base.sandbox_backend),
         sandbox_url: override_cfg.sandbox_url.or(base.sandbox_url),
         sandbox_api_key: override_cfg.sandbox_api_key.or(base.sandbox_api_key),
+        sandbox_shannon_home: override_cfg
+            .sandbox_shannon_home
+            .or(base.sandbox_shannon_home),
+        sandbox_shannon_capability: override_cfg
+            .sandbox_shannon_capability
+            .or(base.sandbox_shannon_capability),
+        sandbox_shannon_sync: override_cfg
+            .sandbox_shannon_sync
+            .or(base.sandbox_shannon_sync),
         prefer_bwrap: override_cfg.prefer_bwrap.or(base.prefer_bwrap),
         bwrap_ro_roots: if override_cfg.bwrap_ro_roots.is_empty() {
             base.bwrap_ro_roots
@@ -10878,6 +10989,7 @@ fn merge_providers(
             telecomjs: merge_provider_config(base.telecomjs, override_cfg.telecomjs),
             edenai: merge_provider_config(base.edenai, override_cfg.edenai),
             concentrate: merge_provider_config(base.concentrate, override_cfg.concentrate),
+            codewhale: merge_provider_config(base.codewhale, override_cfg.codewhale),
             modelstudio_token_plan: merge_provider_config(
                 base.modelstudio_token_plan,
                 override_cfg.modelstudio_token_plan,

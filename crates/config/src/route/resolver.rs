@@ -448,6 +448,25 @@ impl RouteResolver {
             // endpoints legitimately accept arbitrary / prefixed ids verbatim.
             ProviderClass::Aggregator | ProviderClass::LocalOrCustom => {
                 if require_catalog_match {
+                    // The Codewhale API's protocol roster is the *account's*
+                    // live catalog, not a compiled list: a customer who
+                    // connects a new provider gets new `provider/model` rows
+                    // without a Codewhale release. Failing closed on a row the
+                    // local catalog has not seen yet would make the account's
+                    // own connected provider unreachable, so infer the
+                    // protocol from the namespace the account API itself uses
+                    // (`anthropic/` is the Messages passthrough; everything
+                    // else is Chat Completions).
+                    if provider_kind == ProviderKind::Codewhale {
+                        return Ok(ResolvedOffering {
+                            wire_model_id: WireModelId::from(raw),
+                            canonical_model: None,
+                            endpoint_key: super::codewhale_endpoint_key_for_model(raw).to_string(),
+                            limits: RouteLimits::default(),
+                            capabilities: RouteCapabilities::default(),
+                            pricing: PricingSku::UnknownOrStale,
+                        });
+                    }
                     // Opencode Zen serves Muse Spark exclusively over Responses.
                     // Handle any future muse-spark variant (e.g. -free suffix)
                     // even when no exact bundled offering exists — fail open to

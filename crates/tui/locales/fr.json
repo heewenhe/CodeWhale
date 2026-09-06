@@ -492,6 +492,7 @@
   "ModelsSourceFallback": "Modèles fournis ou configurés ; disponibilité non vérifiée.",
   "CmdModelDbDescription": "Parcourir la base de modèles intégrée",
   "CmdNetworkDescription": "Gérer les règles réseau d'autorisation et de refus",
+  "CmdShannonDescription": "Inspect this session's ShannonNet World, capabilities, children, and receipts",
   "CmdUpdateDescription": "Rechercher et installer une nouvelle version de Codewhale",
   "CmdNoteDescription": "Ajouter, lister, modifier ou supprimer des notes du workspace",
   "CmdThemeDescription": "Changer de thème ou ouvrir le sélecteur de thème",

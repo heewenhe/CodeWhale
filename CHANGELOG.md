@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answerable work and no longer inflates the `blocked` chip; the receipts
   roster and the wire `state` gain `parked` (#5906, #5921).
 
+
+- `codewhale account keys set|remove|list` no longer carry a hardcoded
+  eight-provider list. Provider ids come from the control plane's public
+  catalog (`GET /api/model-providers`), are validated locally against
+  `^[a-z0-9][a-z0-9-]{0,63}$` before they reach a URL path, and `list` shows
+  every catalog provider with its label and stored-key state. `--from-local`
+  maps a catalog row onto the local runtime provider through the catalog's own
+  `runtimeProvider` field, so a newly supported provider needs no CLI release.
+
 ### Fixed
 
 - The posture bar states how long the session has been working and how long
@@ -67,8 +76,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `workers`, `help`); every other verb stays dispatchable and is documented
   under explicit groups in `/fleet help`. The roster no longer shows the
   untouched built-in `general` alias next to `worker` (#5888).
+- `codewhale` provider: account-backed model access over the provider keys a
+  customer connected to their Codewhale account. One base URL
+  (`https://api.codewhale.net/v1`, overridable with `CODEWHALE_API_BASE`;
+  HTTPS required except on loopback), one `cwc_key_…` account API key with the
+  `models:infer` scope (`CODEWHALE_API_KEY`), and a per-model wire chosen from
+  the account's authenticated `GET /v1/models`: ids are `provider/model` and
+  each row states `chat-completions` (`/v1/chat/completions`) or
+  `anthropic-messages` (`/v1/messages`). Both protocols authenticate with
+  `Authorization: Bearer`, never `x-api-key`. The key is read from
+  `CODEWHALE_API_KEY`, the `codewhale` secret-store slot, or
+  `[providers.codewhale] api_key` / `api_key_env`, and a missing key fails
+  before any request instead of dispatching unauthenticated. If the catalog
+  cannot be fetched the route falls back to three bootstrap ids and says so.
+- `codewhale account api-keys create --scope` now accepts `models:infer`
+  alongside `account:read` and `agent:run`, and an omitted `--scope` sends all
+  three explicitly. `--use` saves the new secret as this machine's local
+  `codewhale` provider credential in the same secret store `codewhale auth`
+  uses; nothing is uploaded.
+- `sandbox_backend = "shannon"`: shell commands run as signed ShannonNet
+  capability invocations (`cap://sandbox/exec`) on a worker that may live on
+  another tailnet node. Codewhale opens a Task World per session for its
+  durable `codewhale` Agent and every command leaves a receipt in
+  `shannon trace`. New keys `sandbox_shannon_home` and
+  `sandbox_shannon_capability`; tool metadata now reports the actual
+  external backend kind instead of always `opensandbox`.
+- `/shannon [world|trace|children]` inspects the session's ShannonNet
+  World: agent, projected capabilities, children, and receipts.
+- ShannonNet sub-agents get compiled context: the session's native-memory
+  hits are imported with provenance and the child's projected World decides
+  what it sees (confidential notes never cross); the session World is
+  checkpointed and closed when the backend drops.
+- Sub-agents under delegated authority: with the ShannonNet backend the
+  `agent` tool spawns a child identity with a World projected from the
+  session World, the child's shell commands are signed as that child, and a
+  join receipt is recorded when it finishes. `SandboxBackend::for_child` /
+  `child_joined` default to sharing the parent backend for other backends.
+- Workspace sync for the ShannonNet backend (`sandbox_shannon_sync`, default
+  on): the session's non-ignored files are shipped into the worker's
+  per-World session container before each command — full tree first, then
+  only changes and deletions — so remote builds and tests run on the files
+  just edited locally and their outputs persist across commands.
 
-## [0.9.12] - 2026-09-04
+## [0.9.12] - 2026-09-03
 
 Codewhale v0.9.12 puts computer use in the binary, opens two new routes —
 Alibaba Model Studio through the data-driven provider table and Concentrate

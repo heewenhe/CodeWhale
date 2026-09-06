@@ -492,6 +492,7 @@
   "ModelsSourceFallback": "Models inclosos o configurats; disponibilitat no verificada.",
   "CmdModelDbDescription": "Explora la base de dades de models inclosa",
   "CmdNetworkDescription": "Gestiona les regles de xarxa de permís i denegació",
+  "CmdShannonDescription": "Inspect this session's ShannonNet World, capabilities, children, and receipts",
   "CmdUpdateDescription": "Comprova i instal·la una nova versió de Codewhale",
   "CmdNoteDescription": "Afegeix, llista, edita o elimina notes de l'espai de treball",
   "CmdThemeDescription": "Canvia de tema o obre el selector de temes",

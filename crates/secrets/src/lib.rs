@@ -1174,6 +1174,7 @@ impl Secrets {
 /// | `telecomjs` / `tokenhub` | `TELECOMJS_API_KEY` |
 /// | `edenai` / `eden-ai` | `EDENAI_API_KEY` |
 /// | `concentrate` / `concentrate-ai` | `CONCENTRATE_API_KEY` |
+/// | `codewhale` / `codewhale-api` | `CODEWHALE_API_KEY` |
 ///
 /// Returns `None` if the provider is not recognised or none of its
 /// candidate environment variables are set to a non-empty value.
@@ -1229,6 +1230,10 @@ pub fn env_for(name: &str) -> Option<String> {
         "concentrate" | "concentrate-ai" | "concentrate_ai" | "concentrateai" => {
             &["CONCENTRATE_API_KEY"]
         }
+        // The Codewhale API route's credential *is* the account API key: one
+        // `cwc_key_…` with the `models:infer` scope, not a second secret.
+        "codewhale" | "codewhale-api" | "codewhale_api" | "cw-api" | "cw_api"
+        | "codewhale-cloud" | "codewhale_cloud" => &["CODEWHALE_API_KEY"],
         "daytona" => &[DAYTONA_API_KEY_ENV, CWC_DAYTONA_TOKEN_ENV],
         // One Alibaba Cloud Model Studio account authenticates every plan /
         // dialect variant; all four names share one env convention.

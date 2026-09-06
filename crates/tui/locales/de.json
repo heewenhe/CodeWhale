@@ -492,6 +492,7 @@
   "ModelsSourceFallback": "Mitgelieferte oder konfigurierte Modelle; Verfügbarkeit nicht geprüft.",
   "CmdModelDbDescription": "Mitgelieferte Modelldatenbank durchsuchen",
   "CmdNetworkDescription": "Netzwerk-Allow- und Deny-Regeln verwalten",
+  "CmdShannonDescription": "Inspect this session's ShannonNet World, capabilities, children, and receipts",
   "CmdUpdateDescription": "Neue Codewhale-Version suchen und installieren",
   "CmdNoteDescription": "Workspace-Notizen hinzufügen, auflisten, bearbeiten oder entfernen",
   "CmdThemeDescription": "Theme wechseln oder Theme-Auswahl öffnen",
