@@ -227,6 +227,21 @@ impl FleetRosterView {
         }
     }
 
+    /// Rebuild this roster from the current workspace, keeping the cursor.
+    ///
+    /// #5954: the roster now stays parked under the saved-teams list, so a
+    /// team switch or delete has to refresh the parked view in place — the
+    /// user pops back to it, and it must not keep painting the pre-change
+    /// selection. Cursor and detail scroll survive because losing them is
+    /// exactly the disruption the back path exists to avoid.
+    pub fn reload(&mut self, app: &App, config: &Config) {
+        let selected = self.selected;
+        let detail_scroll = self.detail_scroll;
+        *self = Self::new(app, config);
+        self.selected = selected.min(self.row_count().saturating_sub(1));
+        self.detail_scroll = detail_scroll;
+    }
+
     /// Total selectable rows: the operator plus every roster member.
     fn row_count(&self) -> usize {
         1 + self.members.len()
@@ -331,12 +346,14 @@ impl ModalView for FleetRosterView {
                 ViewAction::None
             }
             KeyCode::Enter => self.activate_selected(),
+            // #5954: the roster stays on the stack under the view it opens,
+            // so `Esc` in workers / saved teams pops back here instead of
+            // closing the window. `Emit` (not `EmitAndClose`) is what makes
+            // the three Fleet views one stack.
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('w') => {
-                ViewAction::EmitAndClose(ViewEvent::FleetRosterOpenWorkersRequested)
+                ViewAction::Emit(ViewEvent::FleetRosterOpenWorkersRequested)
             }
-            KeyCode::Char('f') => {
-                ViewAction::EmitAndClose(ViewEvent::FleetRosterOpenFleetsRequested)
-            }
+            KeyCode::Char('f') => ViewAction::Emit(ViewEvent::FleetRosterOpenFleetsRequested),
             KeyCode::Home => {
                 self.detail_scroll = 0;
                 ViewAction::None

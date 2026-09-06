@@ -27,6 +27,29 @@ pub(crate) fn sync_fleet_roster(app: &mut App, config: &Config, engine_handle: &
     });
 }
 
+/// Refresh the Fleet roster when it is parked on top of the stack after a
+/// store mutation (#5954).
+///
+/// The roster now stays open underneath the saved-teams list, so selecting or
+/// deleting a team has to update the view the user pops back to — otherwise
+/// it keeps painting the pre-change team. Cursor and detail scroll survive,
+/// because losing them is the disruption the back path exists to avoid.
+pub(crate) fn refresh_parked_fleet_roster(app: &mut App, config: &Config) {
+    if app.view_stack.top_kind() != Some(ModalKind::FleetRoster) {
+        return;
+    }
+    let Some(mut view) = app.view_stack.pop() else {
+        return;
+    };
+    if let Some(roster) = view
+        .as_any_mut()
+        .downcast_mut::<crate::tui::views::fleet_roster::FleetRosterView>()
+    {
+        roster.reload(app, config);
+    }
+    app.view_stack.push_boxed(view);
+}
+
 /// Once per event-loop iteration: deliver a pending fleet mutation to the
 /// engine and clear the flag.
 pub(crate) fn flush_stale_fleet_roster(
@@ -1415,20 +1438,31 @@ pub(crate) async fn handle_view_events(
             ViewEvent::FleetStoreChanged { message } => {
                 app.status_message = Some(message);
                 sync_fleet_roster(app, config, engine_handle);
+                refresh_parked_fleet_roster(app, config);
             }
+            // #5954: the roster emits (rather than emit-and-closes) these, so
+            // it is still on the stack right underneath. Pushing on top makes
+            // the three Fleet views one stack: `Esc` pops back to the roster,
+            // and only closes the window at the root.
             ViewEvent::FleetRosterOpenFleetsRequested => {
                 if app.view_stack.top_kind() != Some(ModalKind::FleetList) {
-                    app.view_stack
-                        .push(crate::tui::views::fleet_list::FleetListView::new(
-                            app, config,
-                        ));
+                    let over_roster = app.view_stack.top_kind() == Some(ModalKind::FleetRoster);
+                    let mut view = crate::tui::views::fleet_list::FleetListView::new(app, config);
+                    if over_roster {
+                        view = view.over_fleet_roster();
+                    }
+                    app.view_stack.push(view);
                 }
             }
             ViewEvent::FleetRosterOpenWorkersRequested => {
                 if app.view_stack.top_kind() != Some(ModalKind::SubAgents) {
+                    let over_roster = app.view_stack.top_kind() == Some(ModalKind::FleetRoster);
                     let agents = subagent_view_agents(app, &app.subagent_cache);
-                    app.view_stack
-                        .push(crate::tui::views::SubAgentsView::for_app(app, agents));
+                    let mut view = crate::tui::views::SubAgentsView::for_app(app, agents);
+                    if over_roster {
+                        view = view.over_fleet_roster();
+                    }
+                    app.view_stack.push(view);
                 }
                 app.status_message =
                     Some(tr(app.ui_locale, MessageId::SubagentsFetching).to_string());

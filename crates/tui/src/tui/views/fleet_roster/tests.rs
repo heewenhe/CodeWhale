@@ -362,6 +362,8 @@ fn selected_named_fleet_member_shows_edit_affordance() {
     assert!(!text.contains("PgUp"), "{text}");
 }
 
+/// #5954: the forward jump `Emit`s and keeps the roster on the stack, so the
+/// view it opens is pushed on top and `Esc` there pops back here.
 #[test]
 fn tab_and_w_open_the_live_workers_tab() {
     for code in [KeyCode::Tab, KeyCode::BackTab, KeyCode::Char('w')] {
@@ -369,11 +371,21 @@ fn tab_and_w_open_the_live_workers_tab() {
         assert!(
             matches!(
                 view.handle_key(key(code)),
-                ViewAction::EmitAndClose(ViewEvent::FleetRosterOpenWorkersRequested)
+                ViewAction::Emit(ViewEvent::FleetRosterOpenWorkersRequested)
             ),
             "{code:?}"
         );
     }
+}
+
+/// #5954: same for the saved-teams jump.
+#[test]
+fn f_opens_saved_teams_without_closing_the_roster() {
+    let mut view = built_in_view();
+    assert!(matches!(
+        view.handle_key(key(KeyCode::Char('f'))),
+        ViewAction::Emit(ViewEvent::FleetRosterOpenFleetsRequested)
+    ));
 }
 
 #[test]
@@ -383,6 +395,49 @@ fn esc_closes() {
         view.handle_key(key(KeyCode::Esc)),
         ViewAction::Close
     ));
+}
+
+/// #5954, end to end on the real stack: `Tab` leaves the roster in place,
+/// the host pushes workers on top, and `Esc` there returns to the roster
+/// rather than closing the window.
+#[test]
+fn roster_tab_workers_esc_returns_to_the_roster() {
+    let mut stack = ViewStack::new();
+    stack.push(built_in_view());
+
+    let events = stack.handle_key(key(KeyCode::Tab));
+    assert!(
+        matches!(
+            events.as_slice(),
+            [ViewEvent::FleetRosterOpenWorkersRequested]
+        ),
+        "{events:?}"
+    );
+    assert_eq!(
+        stack.top_kind(),
+        Some(ModalKind::FleetRoster),
+        "the roster must survive the forward jump so it can be popped back to"
+    );
+
+    // What ui/handlers.rs does with that event.
+    stack.push(crate::tui::views::SubAgentsView::new(Vec::new()).over_fleet_roster());
+    assert_eq!(stack.top_kind(), Some(ModalKind::SubAgents));
+
+    stack.handle_key(key(KeyCode::Esc));
+    assert_eq!(
+        stack.top_kind(),
+        Some(ModalKind::FleetRoster),
+        "Esc in workers must return to the roster, not close the window"
+    );
+}
+
+/// #5954: `Esc` at the root of the Fleet stack still closes the window.
+#[test]
+fn esc_at_the_roster_root_closes_the_window() {
+    let mut stack = ViewStack::new();
+    stack.push(built_in_view());
+    stack.handle_key(key(KeyCode::Esc));
+    assert!(stack.is_empty(), "Esc at the roster must close the window");
 }
 
 #[test]

@@ -29,6 +29,7 @@ use crate::fleet::store::{
     FleetEntry, FleetScope, SelectedFleet, delete_fleet, list_fleets, migrate_legacy_roster,
     selected_fleet, set_selected,
 };
+use crate::localization::{Locale, MessageId, tr};
 use crate::palette;
 use crate::tui::app::App;
 use crate::tui::menu_style;
@@ -70,6 +71,14 @@ pub struct FleetListView {
     hovered_row: Cell<Option<usize>>,
     fleet_config: codewhale_config::FleetConfigToml,
     workspace: PathBuf,
+    /// UI locale, for the one hint whose wording changes with the entry path.
+    locale: Locale,
+    /// True when the Fleet roster is parked directly underneath on the view
+    /// stack (#5954), i.e. this list was opened with `f` from the roster.
+    /// `Esc` pops one view either way — the flag only decides whether the
+    /// footer promises `back` or `close`. Direct entry (`/fleet list`)
+    /// leaves it false, so `Esc` closes as before.
+    back_to_fleet_roster: bool,
 }
 
 impl FleetListView {
@@ -93,7 +102,17 @@ impl FleetListView {
             hovered_row: Cell::new(None),
             fleet_config: config.fleet_config(),
             workspace,
+            locale: app.ui_locale,
+            back_to_fleet_roster: false,
         }
+    }
+
+    /// Mark this list as pushed on top of the Fleet roster (#5954), so the
+    /// footer says `back` rather than `close`.
+    #[must_use]
+    pub fn over_fleet_roster(mut self) -> Self {
+        self.back_to_fleet_roster = true;
+        self
     }
 
     fn selected_entry(&self) -> Option<&FleetEntry> {
@@ -135,7 +154,13 @@ impl FleetListView {
         if self.banner_visible() {
             hints.push(ActionHint::new("m", "migrate"));
         }
-        hints.push(ActionHint::new("Esc", "close"));
+        // The hint has to name what `Esc` actually does: pop back to the
+        // parked roster, or close the window at the root (#5954).
+        hints.push(if self.back_to_fleet_roster {
+            ActionHint::new("Esc", tr(self.locale, MessageId::SetupActionBack))
+        } else {
+            ActionHint::new("Esc", "close")
+        });
         hints
     }
 
@@ -609,6 +634,88 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
+    }
+
+    /// #5954: roster → `f` → saved teams → `Esc` returns to the roster, and
+    /// the footer promises `back` rather than `close` while it will.
+    #[test]
+    fn saved_teams_opened_from_the_roster_returns_there_on_esc() {
+        let ws = tempfile::TempDir::new().expect("ws");
+        save_in(ws.path(), FleetScope::Workspace, "alpha");
+        let app = app_in(ws.path().to_path_buf());
+        let config = Config::default();
+
+        let mut stack = crate::tui::views::ViewStack::new();
+        stack.push(crate::tui::views::fleet_roster::FleetRosterView::new(
+            &app, &config,
+        ));
+        let events = stack.handle_key(key(KeyCode::Char('f')));
+        assert!(
+            matches!(
+                events.as_slice(),
+                [ViewEvent::FleetRosterOpenFleetsRequested]
+            ),
+            "{events:?}"
+        );
+        assert_eq!(
+            stack.top_kind(),
+            Some(ModalKind::FleetRoster),
+            "the roster must survive the forward jump"
+        );
+
+        // What ui/handlers.rs does with that event.
+        stack.push(FleetListView::new(&app, &config).over_fleet_roster());
+        assert_eq!(stack.top_kind(), Some(ModalKind::FleetList));
+
+        stack.handle_key(key(KeyCode::Esc));
+        assert_eq!(
+            stack.top_kind(),
+            Some(ModalKind::FleetRoster),
+            "Esc in saved teams must return to the roster, not close the window"
+        );
+    }
+
+    /// #5954: `/fleet list` is the root of its own stack, so `Esc` closes.
+    #[test]
+    fn saved_teams_opened_directly_closes_on_esc() {
+        let ws = tempfile::TempDir::new().expect("ws");
+        let mut stack = crate::tui::views::ViewStack::new();
+        stack.push(FleetListView::new(
+            &app_in(ws.path().to_path_buf()),
+            &Config::default(),
+        ));
+        stack.handle_key(key(KeyCode::Esc));
+        assert!(stack.is_empty(), "direct entry must close on Esc");
+    }
+
+    /// #5954: the hint names what `Esc` actually does in each entry path.
+    #[test]
+    fn saved_teams_esc_hint_matches_the_entry_path() {
+        let ws = tempfile::TempDir::new().expect("ws");
+        save_in(ws.path(), FleetScope::Workspace, "alpha");
+        let app = app_in(ws.path().to_path_buf());
+        let config = Config::default();
+
+        // `footer_hints` is the only source the footer paints from, so
+        // asserting it is asserting what the user reads.
+        let esc_label = |view: &FleetListView| {
+            view.footer_hints()
+                .into_iter()
+                .find(|hint| hint.key == "Esc")
+                .map(|hint| hint.label.into_owned())
+                .expect("Esc hint")
+        };
+
+        assert_eq!(
+            esc_label(&FleetListView::new(&app, &config)),
+            "close",
+            "direct entry must still promise close"
+        );
+        assert_eq!(
+            esc_label(&FleetListView::new(&app, &config).over_fleet_roster()),
+            "back",
+            "over the roster the hint must promise back"
+        );
     }
 
     #[test]
