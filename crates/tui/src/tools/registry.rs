@@ -510,7 +510,20 @@ fn project_readonly_evidence_schema(name: &str, schema: &mut Value) {
         }
         return;
     }
-    let Some(actions) = schema["properties"]["action"]["enum"].as_array_mut() else {
+    // Probe with `get_mut`, never `schema["properties"]["action"]["enum"]`:
+    // serde_json's IndexMut auto-vivifies missing keys by inserting Null, so
+    // the old probe left `properties.action = {"enum": null}` inside schemas
+    // that have no action property (e.g. lowercase `bash`). Strict
+    // OpenAI-compatible validators then reject the whole request with
+    // `Invalid schema for function 'bash': null is not of type "array"`
+    // (observed on Fleet read-only workers; see registry tests).
+    let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(action) = properties.get_mut("action") else {
+        return;
+    };
+    let Some(actions) = action.get_mut("enum").and_then(Value::as_array_mut) else {
         return;
     };
     match name {
