@@ -26,11 +26,33 @@ export const CHANGELOG: ChangelogRelease[] = [
     "date": null,
     "unreleased": true,
     "compareUrl": "https://github.com/Hmbown/CodeWhale/compare/v0.9.12...HEAD",
-    "sections": []
+    "sections": [
+      {
+        "heading": "Added",
+        "items": [
+          "The /theme picker now discovers valid user-authored custom:<name> overlays, previews their colors, highlights the active overlay, and preserves it when the picker is opened and committed without navigation (#5901).",
+          "codewhale provider: account-backed model access over the provider keys a customer connected to their Codewhale account. One base URL (https://api.codewhale.net/v1, overridable with CODEWHALE_API_BASE; HTTPS required except on loopback), one cwc_key_… account API key with the models:infer scope (CODEWHALE_API_KEY), and a per-model wire chosen from the account's authenticated GET /v1/models: ids are provider/model and each row states chat-completions (/v1/chat/completions) or…",
+          "codewhale account api-keys create --scope now accepts models:infer alongside account:read and agent:run, and an omitted --scope sends all three explicitly. --use saves the new secret as this machine's local codewhale provider credential in the same secret store codewhale auth uses; nothing is uploaded.",
+          "sandbox_backend = \"shannon\": shell commands run as signed ShannonNet capability invocations (cap://sandbox/exec) on a worker that may live on another tailnet node. Codewhale opens a Task World per session for its durable codewhale Agent and every command leaves a receipt in shannon trace. New keys sandbox_shannon_home and sandbox_shannon_capability; tool metadata now reports the actual external backend kind instead of always opensandbox.",
+          "/shannon [world|trace|children] inspects the session's ShannonNet World: agent, projected capabilities, children, and receipts.",
+          "ShannonNet sub-agents get compiled context: the session's native-memory hits are imported with provenance and the child's projected World decides what it sees (confidential notes never cross); the session World is checkpointed and closed when the backend drops.",
+          "Sub-agents under delegated authority: with the ShannonNet backend the agent tool spawns a child identity with a World projected from the session World, the child's shell commands are signed as that child, and a join receipt is recorded when it finishes. SandboxBackend::for_child / child_joined default to sharing the parent backend for other backends.",
+          "Workspace sync for the ShannonNet backend (sandbox_shannon_sync, default on): the session's non-ignored files are shipped into the worker's per-World session container before each command — full tree first, then only changes and deletions — so remote builds and tests run on the files just edited locally and their outputs persist across commands."
+        ],
+        "itemCount": 8
+      },
+      {
+        "heading": "Changed",
+        "items": [
+          "codewhale account keys set|remove|list no longer carry a hardcoded eight-provider list. Provider ids come from the control plane's public catalog (GET /api/model-providers), are validated locally against ^[a-z0-9][a-z0-9-]{0,63}$ before they reach a URL path, and list shows every catalog provider with its label and stored-key state. --from-local maps a catalog row onto the local runtime provider through the catalog's own runtimeProvider field, so a newly supported provider…"
+        ],
+        "itemCount": 1
+      }
+    ]
   },
   {
     "version": "0.9.12",
-    "date": "2026-09-04",
+    "date": "2026-09-03",
     "unreleased": false,
     "compareUrl": "https://github.com/Hmbown/CodeWhale/compare/v0.9.11...v0.9.12",
     "sections": [
