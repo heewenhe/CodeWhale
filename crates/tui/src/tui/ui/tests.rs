@@ -597,10 +597,12 @@ fn session_id_divergence_notice_names_both_ids_and_the_resume_command() {
     let app = focus_test_app();
     let text =
         super::event_loop::session_id_divergence_notice(&app, "sess-old-1234", "sess-new-5678");
-    assert!(text.contains("sess-new-5678"), "{text}");
-    assert!(text.contains("sess-old-1234"), "{text}");
-    assert!(text.contains("codewhale resume sess-old-1234"), "{text}");
-    assert!(text.contains("codewhale sessions"), "{text}");
+    // Plain asserts on purpose: formatting the notice into a panic message
+    // trips CodeQL's cleartext-logging rule on the session ids it contains.
+    assert!(text.contains("sess-new-5678"));
+    assert!(text.contains("sess-old-1234"));
+    assert!(text.contains("codewhale resume sess-old-1234"));
+    assert!(text.contains("codewhale sessions"));
 }
 
 fn focus_test_app() -> App {
