@@ -15106,6 +15106,8 @@ fn operator_model_for_subagent_enumerates_from_catalog_facade() {
     // enumeration branch; the chosen model must be exactly the facade's first
     // entry (proving the consumer was migrated off the raw legacy path), never
     // an invented id.
+    let _env = crate::test_support::lock_test_env();
+    let _live = crate::provider_lake::lock_live_snapshot();
     crate::provider_lake::clear_live_snapshot();
     let mut runtime = stub_runtime(); // official DeepSeek API (strict validation)
     runtime.model = "definitely-not-a-real-model".to_string();
