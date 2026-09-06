@@ -6381,7 +6381,7 @@ fn every_named_role_has_one_complete_capability_based_surface() {
         "terminal/send",
         "terminal/wait",
         "todo_write",
-        "tts",
+        // `tts` is a hidden compat alias for `speech` since #5941.
         "tui_help",
         "validate_data",
         "verify",
@@ -20849,4 +20849,64 @@ async fn agent_claim_is_withheld_from_a_role_with_no_write_authority() {
         .expect_err("a read-only role cannot widen a write scope")
         .to_string();
     assert!(refusal.contains("no write authority to widen"), "{refusal}");
+}
+
+#[test]
+fn agent_tool_description_names_only_schema_roles() {
+    // Every `type=<token>` and every role in the "type selects the Fleet role:"
+    // sentence must be a value the `type` enum accepts; the legacy aliases
+    // parse at the deserialization boundary but a strict gateway rejects
+    // them against the declared enum (#5940).
+    let schema: std::collections::HashSet<&str> = crate::fleet::role::FLEET_ROLE_SCHEMA_VALUES
+        .into_iter()
+        .collect();
+    let texts = [
+        super::AGENT_TOOL_DESCRIPTION,
+        super::SUBAGENT_TYPE_DESCRIPTION,
+    ];
+    let mut seen = 0;
+    for text in texts {
+        for (index, _) in text.match_indices("type=") {
+            let token: String = text[index + "type=".len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                .collect();
+            assert!(
+                schema.contains(token.as_str()),
+                "type={token} is not a schema role"
+            );
+            seen += 1;
+        }
+        if let Some(start) = text.find("type selects the Fleet role:") {
+            let sentence = &text[start..];
+            let sentence = &sentence[..sentence.find(". ").unwrap_or(sentence.len())];
+            for (index, _) in sentence.match_indices(" (") {
+                let role: String = sentence[..index]
+                    .chars()
+                    .rev()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                assert!(
+                    schema.contains(role.as_str()),
+                    "role {role} is not a schema role"
+                );
+                seen += 1;
+            }
+        }
+    }
+    assert!(
+        seen >= 10,
+        "the guard parsed too little of the description: {seen}"
+    );
+    for legacy in ["worker", "scout", "builder", "verifier", "consultant"] {
+        for text in texts {
+            assert!(
+                !text.contains(&format!("type={legacy}")) && !text.contains(&format!("{legacy} (")),
+                "legacy alias {legacy} is advertised in a model-facing description"
+            );
+        }
+    }
 }
